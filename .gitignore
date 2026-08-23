@@ -48,3 +48,4 @@ venv/
 !.vscode/settings.json
 !.vscode/tasks.json
 yarn-error.log
+.pip-install-stamp
