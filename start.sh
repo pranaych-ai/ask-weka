@@ -1,8 +1,16 @@
 #!/usr/bin/env bash
 set -e
 
-echo "==> Installing Python dependencies…"
-pip install -q -r requirements.txt
+# Skip pip install when requirements.txt hasn't changed since the last
+# successful install (same stamp approach as the frontend build below).
+PIP_STAMP=.pip-install-stamp
+if [ ! -f "$PIP_STAMP" ] || [ requirements.txt -nt "$PIP_STAMP" ]; then
+  echo "==> Installing Python dependencies…"
+  pip install -q -r requirements.txt
+  touch "$PIP_STAMP"
+else
+  echo "==> Python dependencies up to date, skipping pip install."
+fi
 
 # Build the frontend when dist is missing or any source/config file is newer
 # than the last build, so restarts always serve the latest UI.
