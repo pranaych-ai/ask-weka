@@ -1,0 +1,1 @@
+- [Gemini model retirement](gemini-model.md) — retired default model causes chat 404s; fix by bumping the GEMINI_MODEL env var, not code.

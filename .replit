@@ -30,3 +30,8 @@ outputType = "webview"
 [[ports]]
 localPort = 8000
 externalPort = 80
+
+[userenv]
+
+[userenv.shared]
+GEMINI_MODEL = "gemini-3.6-flash"
