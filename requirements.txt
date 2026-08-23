@@ -1,0 +1,12 @@
+fastapi>=0.115
+uvicorn[standard]>=0.30
+sqlalchemy>=2.0
+psycopg2-binary>=2.9
+google-genai>=1.0
+python-dotenv>=1.0
+fastapi
+google-genai
+psycopg2-binary
+python-dotenv
+sqlalchemy
+uvicorn[standard]
