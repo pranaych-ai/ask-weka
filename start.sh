@@ -18,7 +18,21 @@ fi
 
 if [ "$needs_build" = "1" ]; then
   echo "==> Building frontend (sources changed or first run)…"
-  (cd frontend && npm install --no-audit --no-fund && npm run build)
+  # Skip npm install when node_modules is already in sync with package-lock.json.
+  needs_install=0
+  if [ ! -d frontend/node_modules ] || [ ! -f frontend/node_modules/.package-lock.json ]; then
+    needs_install=1
+  elif [ frontend/package.json -nt frontend/node_modules/.package-lock.json ] || \
+       [ frontend/package-lock.json -nt frontend/node_modules/.package-lock.json ]; then
+    needs_install=1
+  fi
+  if [ "$needs_install" = "1" ]; then
+    echo "==> Installing frontend dependencies…"
+    (cd frontend && npm install --no-audit --no-fund)
+  else
+    echo "==> Frontend dependencies up to date, skipping npm install."
+  fi
+  (cd frontend && npm run build)
   touch "$BUILD_STAMP"
 else
   echo "==> Frontend up to date."
