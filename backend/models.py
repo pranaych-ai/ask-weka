@@ -44,3 +44,20 @@ class Message(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
     conversation: Mapped[Conversation] = relationship(back_populates="messages")
+
+
+class Feedback(Base):
+    __tablename__ = "feedback"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    message_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("messages.id", ondelete="CASCADE"), index=True
+    )
+    question: Mapped[str] = mapped_column(Text)
+    answer_summary: Mapped[str] = mapped_column(Text)
+    feedback_text: Mapped[str] = mapped_column(Text, default="")
+    thumbs: Mapped[str] = mapped_column(String(10), default="")  # "up" | "down" | ""
+    logged_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    username: Mapped[str] = mapped_column(String(120), default="anonymous")
+    cited_sources: Mapped[str] = mapped_column(Text, default="")
+    domain: Mapped[str] = mapped_column(String(20), default="")  # "IT" | "HR" | ""

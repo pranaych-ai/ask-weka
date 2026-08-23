@@ -1,6 +1,111 @@
 import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 
+function FeedbackBar({ messageId, question }) {
+  const [thumbs, setThumbs] = useState(null);
+  const [open, setOpen] = useState(false);
+  const [text, setText] = useState("");
+  const [sent, setSent] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  const submit = async (payload) => {
+    setBusy(true);
+    try {
+      const res = await fetch("/api/feedback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message_id: messageId, ...payload }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      return true;
+    } catch (err) {
+      console.error("Feedback failed:", err);
+      alert("Could not save feedback. Please try again.");
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const rate = async (value) => {
+    if (busy) return;
+    const next = value === thumbs ? null : value;
+    if (await submit({ thumbs: next })) setThumbs(next);
+  };
+
+  const sendWritten = async () => {
+    if (!text.trim() || busy) return;
+    if (await submit({ thumbs, feedback_text: text })) {
+      setSent(true);
+      setOpen(false);
+    }
+  };
+
+  return (
+    <div className="feedback-bar">
+      <button
+        className={`fb-btn ${thumbs === "up" ? "selected" : ""}`}
+        title="Good answer"
+        onClick={() => rate("up")}
+      >
+        👍
+      </button>
+      <button
+        className={`fb-btn ${thumbs === "down" ? "selected" : ""}`}
+        title="Bad answer"
+        onClick={() => rate("down")}
+      >
+        👎
+      </button>
+      <button className="fb-link" onClick={() => setOpen(true)}>
+        {sent ? "Feedback sent ✓" : "Write feedback"}
+      </button>
+
+      {open && (
+        <div className="fb-overlay" onClick={() => setOpen(false)}>
+          <div className="fb-modal" onClick={(e) => e.stopPropagation()}>
+            <h2>Share feedback</h2>
+            <p className="fb-question">Q: {question}</p>
+            <div className="fb-thumbs-row">
+              <button
+                className={`fb-btn big ${thumbs === "up" ? "selected" : ""}`}
+                onClick={() => setThumbs(thumbs === "up" ? null : "up")}
+              >
+                👍
+              </button>
+              <button
+                className={`fb-btn big ${thumbs === "down" ? "selected" : ""}`}
+                onClick={() => setThumbs(thumbs === "down" ? null : "down")}
+              >
+                👎
+              </button>
+            </div>
+            <textarea
+              autoFocus
+              rows={6}
+              placeholder="What was helpful or missing? What should improve?"
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+            />
+            <div className="fb-actions">
+              <button className="fb-cancel" onClick={() => setOpen(false)}>
+                Cancel
+              </button>
+              <button
+                className="fb-submit"
+                disabled={!text.trim() || busy}
+                onClick={sendWritten}
+              >
+                {busy ? "Sending…" : "Submit feedback"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 async function api(path, opts) {
   const res = await fetch(path, opts);
   if (!res.ok) throw new Error(await res.text());
@@ -85,6 +190,15 @@ export default function App() {
               };
               return copy;
             });
+          if (payload.done && payload.message_id)
+            setMessages((m) => {
+              const copy = [...m];
+              copy[copy.length - 1] = {
+                ...copy[copy.length - 1],
+                id: payload.message_id,
+              };
+              return copy;
+            });
           if (payload.error)
             setMessages((m) => {
               const copy = [...m];
@@ -152,6 +266,16 @@ export default function App() {
                   <span className="thinking">…</span>
                 )}
               </div>
+              {m.role === "assistant" &&
+                m.content &&
+                m.id &&
+                !(streaming && i === messages.length - 1) && (
+                  <FeedbackBar
+                    key={m.id}
+                    messageId={m.id}
+                    question={messages[i - 1]?.content || ""}
+                  />
+                )}
             </div>
           ))}
         </div>

@@ -1,16 +1,17 @@
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from .db import Base, engine, get_db, SessionLocal
-from .models import Conversation, Message
+from .models import Conversation, Feedback, Message
 from .prompts import build_system_prompt
 from .providers import get_provider
 
@@ -65,6 +66,95 @@ def delete_conversation(conversation_id: str, db: Session = Depends(get_db)):
     return {"ok": True}
 
 
+# ---------- Feedback ----------
+
+HR_KEYWORDS = (
+    "hr", "payroll", "benefits?", "leaves?", "vacation", "pto", "hiring",
+    "onboarding", "offboarding", "salary", "compensation", "recruit(?:ing|er|ment)?",
+    "insurance", "401k", "holidays?", "maternity", "paternity", "bamboohr?",
+)
+_HR_RE = re.compile(r"\b(?:" + "|".join(HR_KEYWORDS) + r")\b", re.IGNORECASE)
+
+_MD_LINK = re.compile(r"\[[^\]]*\]\((https?://[^)\s]+)\)")
+_BARE_URL = re.compile(r"(?<!\()https?://[^\s)\]>\"']+")
+
+
+def _extract_sources(answer: str) -> list[str]:
+    sources = _MD_LINK.findall(answer)
+    for url in _BARE_URL.findall(answer):
+        if url not in sources:
+            sources.append(url)
+    return sources
+
+
+def _classify_domain(question: str, answer: str) -> str:
+    return "HR" if _HR_RE.search(f"{question}\n{answer}") else "IT"
+
+
+def _summarize(answer: str, limit: int = 300) -> str:
+    # Strip markdown links/formatting, collapse whitespace, truncate.
+    text = _MD_LINK.sub(lambda m: m.group(0).split("]")[0][1:], answer)
+    text = re.sub(r"[#*`>_|-]{1,}", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text[:limit] + ("…" if len(text) > limit else "")
+
+
+class FeedbackRequest(BaseModel):
+    message_id: str
+    thumbs: Optional[str] = None  # "up" | "down" | None (clear)
+    feedback_text: Optional[str] = None  # None = leave unchanged
+
+
+@app.post("/api/feedback")
+def submit_feedback(
+    req: FeedbackRequest, request: Request, db: Session = Depends(get_db)
+):
+    if req.thumbs not in (None, "", "up", "down"):
+        raise HTTPException(400, "thumbs must be 'up' or 'down'")
+    if req.feedback_text is not None and len(req.feedback_text) > 5000:
+        raise HTTPException(400, "Feedback text too long (max 5000 chars)")
+
+    # Question and answer are loaded server-side from the stored message —
+    # never trusted from the client.
+    msg = db.get(Message, req.message_id)
+    if not msg or msg.role != "assistant":
+        raise HTTPException(404, "Assistant message not found")
+    answer = msg.content
+    question = ""
+    for m in msg.conversation.messages:
+        if m.id == msg.id:
+            break
+        if m.role == "user":
+            question = m.content
+
+    username = (
+        request.headers.get("X-Replit-User-Name")
+        or request.headers.get("X-Forwarded-User")
+        or "anonymous"
+    )
+
+    # One feedback row per (message, user): update in place so a changed or
+    # cleared thumb never leaves contradictory rows behind.
+    fb = (
+        db.query(Feedback)
+        .filter(Feedback.message_id == msg.id, Feedback.username == username)
+        .first()
+    )
+    if not fb:
+        fb = Feedback(message_id=msg.id, username=username)
+        db.add(fb)
+    fb.question = question.strip()
+    fb.answer_summary = _summarize(answer)
+    fb.thumbs = req.thumbs or ""
+    if req.feedback_text is not None:
+        fb.feedback_text = req.feedback_text.strip()
+    fb.logged_time = datetime.now(timezone.utc)
+    fb.cited_sources = "\n".join(_extract_sources(answer))
+    fb.domain = _classify_domain(question, answer)
+    db.commit()
+    return {"ok": True, "id": fb.id}
+
+
 # ---------- Chat (SSE streaming) ----------
 
 
@@ -115,6 +205,7 @@ async def chat(req: ChatRequest):
     async def event_stream():
         yield _sse({"conversation_id": conversation_id, "title": conversation_title})
         full_response = []
+        assistant_message_id = None
         try:
             async for chunk in provider.stream_chat(system, history):
                 full_response.append(chunk)
@@ -125,19 +216,19 @@ async def chat(req: ChatRequest):
             if full_response:
                 db2 = SessionLocal()
                 try:
-                    db2.add(
-                        Message(
-                            conversation_id=conversation_id,
-                            role="assistant",
-                            content="".join(full_response),
-                        )
+                    msg = Message(
+                        conversation_id=conversation_id,
+                        role="assistant",
+                        content="".join(full_response),
                     )
+                    db2.add(msg)
                     conv2 = db2.get(Conversation, conversation_id)
                     conv2.updated_at = datetime.now(timezone.utc)
                     db2.commit()
+                    assistant_message_id = msg.id
                 finally:
                     db2.close()
-        yield _sse({"done": True})
+        yield _sse({"done": True, "message_id": assistant_message_id})
 
     return StreamingResponse(
         event_stream(),

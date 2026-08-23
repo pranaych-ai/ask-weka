@@ -164,8 +164,130 @@ body {
   padding: 1px 5px;
   font-size: 13px;
 }
+.msg-content a {
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.msg-content a:hover {
+  color: var(--accent);
+}
 .thinking {
   color: var(--muted);
+}
+
+/* ---- Feedback ---- */
+.feedback-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+}
+.fb-btn {
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  font-size: 14px;
+  padding: 2px 6px;
+  cursor: pointer;
+  opacity: 0.55;
+}
+.fb-btn:hover {
+  opacity: 1;
+  background: rgba(255, 255, 255, 0.06);
+}
+.fb-btn.selected {
+  opacity: 1;
+  border-color: var(--accent);
+  background: rgba(217, 119, 87, 0.12);
+}
+.fb-btn.big {
+  font-size: 20px;
+  padding: 6px 14px;
+}
+.fb-link {
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.fb-link:hover {
+  color: var(--text);
+}
+
+.fb-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+.fb-modal {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 24px;
+  width: min(560px, 92vw);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.fb-modal h2 {
+  font-size: 18px;
+}
+.fb-question {
+  font-size: 13px;
+  color: var(--muted);
+  max-height: 60px;
+  overflow: hidden;
+}
+.fb-thumbs-row {
+  display: flex;
+  gap: 8px;
+}
+.fb-modal textarea {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 14px;
+  padding: 10px 12px;
+  resize: vertical;
+  outline: none;
+}
+.fb-modal textarea:focus {
+  border-color: var(--accent);
+}
+.fb-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.fb-cancel {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  border-radius: 8px;
+  padding: 8px 14px;
+  cursor: pointer;
+}
+.fb-submit {
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  padding: 8px 16px;
+  cursor: pointer;
+}
+.fb-submit:disabled {
+  opacity: 0.4;
+  cursor: default;
 }
 
 /* ---- Composer ---- */
