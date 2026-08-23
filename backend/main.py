@@ -10,6 +10,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from .auth import AUTH_ENABLED, require_user
+from .auth import router as auth_router
 from .db import Base, engine, get_db, SessionLocal
 from .models import Conversation, Feedback, Message
 from .prompts import build_system_prompt
@@ -22,6 +24,19 @@ HISTORY_BUDGET = 30
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="Ask WEKA POC")
+
+import os
+
+from starlette.middleware.sessions import SessionMiddleware
+
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=os.environ.get("SESSION_SECRET", "dev-only-insecure"),
+    max_age=8 * 3600,  # cookie lifetime = idle limit; absolute enforced in auth.py
+    same_site="lax",
+    https_only=False,  # TLS terminates at the Replit proxy
+)
+app.include_router(auth_router)
 
 
 # ---------- Conversations API ----------
@@ -40,7 +55,9 @@ class MessageOut(BaseModel):
 
 
 @app.get("/api/conversations")
-def list_conversations(db: Session = Depends(get_db)) -> list[ConversationOut]:
+def list_conversations(
+    db: Session = Depends(get_db), user: dict = Depends(require_user)
+) -> list[ConversationOut]:
     rows = db.query(Conversation).order_by(Conversation.updated_at.desc()).all()
     return [
         ConversationOut(id=c.id, title=c.title, updated_at=c.updated_at.isoformat())
@@ -49,7 +66,11 @@ def list_conversations(db: Session = Depends(get_db)) -> list[ConversationOut]:
 
 
 @app.get("/api/conversations/{conversation_id}/messages")
-def list_messages(conversation_id: str, db: Session = Depends(get_db)) -> list[MessageOut]:
+def list_messages(
+    conversation_id: str,
+    db: Session = Depends(get_db),
+    user: dict = Depends(require_user),
+) -> list[MessageOut]:
     conv = db.get(Conversation, conversation_id)
     if not conv:
         raise HTTPException(404, "Conversation not found")
@@ -57,7 +78,11 @@ def list_messages(conversation_id: str, db: Session = Depends(get_db)) -> list[M
 
 
 @app.delete("/api/conversations/{conversation_id}")
-def delete_conversation(conversation_id: str, db: Session = Depends(get_db)):
+def delete_conversation(
+    conversation_id: str,
+    db: Session = Depends(get_db),
+    user: dict = Depends(require_user),
+):
     conv = db.get(Conversation, conversation_id)
     if not conv:
         raise HTTPException(404, "Conversation not found")
@@ -107,7 +132,10 @@ class FeedbackRequest(BaseModel):
 
 @app.post("/api/feedback")
 def submit_feedback(
-    req: FeedbackRequest, request: Request, db: Session = Depends(get_db)
+    req: FeedbackRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    user: dict = Depends(require_user),
 ):
     if req.thumbs not in (None, "", "up", "down"):
         raise HTTPException(400, "thumbs must be 'up' or 'down'")
@@ -127,11 +155,7 @@ def submit_feedback(
         if m.role == "user":
             question = m.content
 
-    username = (
-        request.headers.get("X-Replit-User-Name")
-        or request.headers.get("X-Forwarded-User")
-        or "anonymous"
-    )
+    username = user["username"]
 
     # One feedback row per (message, user): update in place so a changed or
     # cleared thumb never leaves contradictory rows behind.
@@ -168,7 +192,7 @@ def _sse(payload: dict) -> str:
 
 
 @app.post("/api/chat")
-async def chat(req: ChatRequest):
+async def chat(req: ChatRequest, user: dict = Depends(require_user)):
     if not req.message.strip():
         raise HTTPException(400, "Empty message")
 

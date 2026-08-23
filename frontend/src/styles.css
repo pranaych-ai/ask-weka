@@ -100,6 +100,62 @@ body {
   font-size: 11px;
   color: var(--muted);
   text-align: center;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.user-line {
+  color: var(--text);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.logout-link {
+  color: var(--muted);
+  font-size: 11px;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.logout-link:hover {
+  color: var(--text);
+}
+
+/* ---- Login page ---- */
+.login-page {
+  height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.login-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 40px 48px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  text-align: center;
+}
+.login-card h1 {
+  font-size: 26px;
+}
+.login-card p {
+  color: var(--muted);
+  font-size: 14px;
+}
+.login-btn {
+  background: var(--accent);
+  color: #fff;
+  border-radius: 10px;
+  padding: 11px 22px;
+  font-size: 15px;
+  text-decoration: none;
+}
+.login-btn:hover {
+  opacity: 0.9;
 }
 
 /* ---- Chat ---- */

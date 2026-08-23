@@ -118,13 +118,20 @@ export default function App() {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
+  const [user, setUser] = useState(undefined); // undefined = loading, null = signed out
   const scrollRef = useRef(null);
 
   const refreshConversations = () =>
     api("/api/conversations").then(setConversations).catch(console.error);
 
   useEffect(() => {
-    refreshConversations();
+    fetch("/api/me")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((me) => {
+        setUser(me);
+        if (me) refreshConversations();
+      })
+      .catch(() => setUser(null));
   }, []);
 
   useEffect(() => {
@@ -221,6 +228,21 @@ export default function App() {
     }
   };
 
+  if (user === undefined) return null; // still checking session
+
+  if (user === null)
+    return (
+      <div className="login-page">
+        <div className="login-card">
+          <h1>Ask WEKA</h1>
+          <p>Sign in with your WEKA Okta account to continue.</p>
+          <a className="login-btn" href="/auth/login">
+            Sign in with Okta
+          </a>
+        </div>
+      </div>
+    );
+
   return (
     <div className="app">
       <aside className="sidebar">
@@ -245,7 +267,17 @@ export default function App() {
             </div>
           ))}
         </div>
-        <div className="sidebar-footer">Ask WEKA · POC</div>
+        <div className="sidebar-footer">
+          <div className="user-line" title={user.email}>
+            {user.name || user.username}
+          </div>
+          {user.auth_enabled && (
+            <a className="logout-link" href="/auth/logout">
+              Sign out
+            </a>
+          )}
+          <div>Ask WEKA · POC</div>
+        </div>
       </aside>
 
       <main className="chat">

@@ -1,0 +1,119 @@
+"""Okta SSO (OIDC) authentication.
+
+Per WEKA golden architecture:
+- Okta OIDC only — no local accounts or passwords.
+- Sessions: <= 8h idle, <= 24h absolute.
+- Auth enforced server-side on every /api route.
+
+Configuration (env):
+- OKTA_ISSUER        e.g. https://weka.okta.com/oauth2/default
+- OKTA_CLIENT_ID
+- OKTA_CLIENT_SECRET (Replit Secret)
+
+If these are not set, the app runs in DEV MODE with auth disabled and the
+user recorded as "anonymous". Production must have them set.
+"""
+
+import os
+import time
+
+from authlib.integrations.starlette_client import OAuth, OAuthError
+from fastapi import APIRouter, HTTPException, Request
+from starlette.responses import RedirectResponse
+
+OKTA_ISSUER = os.environ.get("OKTA_ISSUER", "").rstrip("/")
+OKTA_CLIENT_ID = os.environ.get("OKTA_CLIENT_ID", "")
+OKTA_CLIENT_SECRET = os.environ.get("OKTA_CLIENT_SECRET", "")
+
+AUTH_ENABLED = bool(OKTA_ISSUER and OKTA_CLIENT_ID and OKTA_CLIENT_SECRET)
+
+IDLE_TIMEOUT_S = 8 * 3600      # WEKA policy: <= 8 hours idle
+ABSOLUTE_TIMEOUT_S = 24 * 3600  # WEKA policy: <= 24 hours absolute
+
+router = APIRouter()
+
+oauth = OAuth()
+if AUTH_ENABLED:
+    oauth.register(
+        name="okta",
+        client_id=OKTA_CLIENT_ID,
+        client_secret=OKTA_CLIENT_SECRET,
+        server_metadata_url=f"{OKTA_ISSUER}/.well-known/openid-configuration",
+        client_kwargs={"scope": "openid profile email"},
+    )
+
+
+def current_user(request: Request) -> dict | None:
+    """Return the session user, enforcing idle + absolute timeouts."""
+    if not AUTH_ENABLED:
+        return {"username": "anonymous", "name": "Dev mode (no SSO)", "email": ""}
+    user = request.session.get("user")
+    if not user:
+        return None
+    now = time.time()
+    if now - user.get("last_seen", 0) > IDLE_TIMEOUT_S:
+        request.session.clear()
+        return None
+    if now - user.get("logged_in_at", 0) > ABSOLUTE_TIMEOUT_S:
+        request.session.clear()
+        return None
+    user["last_seen"] = now
+    request.session["user"] = user
+    return user
+
+
+def require_user(request: Request) -> dict:
+    user = current_user(request)
+    if not user:
+        raise HTTPException(401, "Not authenticated")
+    return user
+
+
+@router.get("/auth/login")
+async def login(request: Request):
+    if not AUTH_ENABLED:
+        return RedirectResponse("/")
+    redirect_uri = str(request.url_for("auth_callback"))
+    # Behind the Replit proxy the app sees http; Okta requires https redirect URIs.
+    if redirect_uri.startswith("http://") and "localhost" not in redirect_uri and "127.0.0.1" not in redirect_uri:
+        redirect_uri = "https://" + redirect_uri[len("http://"):]
+    return await oauth.okta.authorize_redirect(request, redirect_uri)
+
+
+@router.get("/auth/callback", name="auth_callback")
+async def auth_callback(request: Request):
+    if not AUTH_ENABLED:
+        return RedirectResponse("/")
+    try:
+        token = await oauth.okta.authorize_access_token(request)
+    except OAuthError as e:
+        raise HTTPException(401, f"Okta sign-in failed: {e.error}")
+    claims = token.get("userinfo") or {}
+    now = time.time()
+    request.session["user"] = {
+        "username": claims.get("preferred_username") or claims.get("email") or "unknown",
+        "name": claims.get("name", ""),
+        "email": claims.get("email", ""),
+        "logged_in_at": now,
+        "last_seen": now,
+    }
+    return RedirectResponse("/")
+
+
+@router.get("/auth/logout")
+async def logout(request: Request):
+    request.session.clear()
+    return RedirectResponse("/")
+
+
+@router.get("/api/me")
+def me(request: Request):
+    user = current_user(request)
+    if not user:
+        raise HTTPException(401, "Not authenticated")
+    return {
+        "username": user["username"],
+        "name": user.get("name", ""),
+        "email": user.get("email", ""),
+        "auth_enabled": AUTH_ENABLED,
+    }

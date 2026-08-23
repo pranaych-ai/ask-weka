@@ -4,9 +4,6 @@ sqlalchemy>=2.0
 psycopg2-binary>=2.9
 google-genai>=1.0
 python-dotenv>=1.0
-fastapi
-google-genai
-psycopg2-binary
-python-dotenv
-sqlalchemy
-uvicorn[standard]
+authlib>=1.3
+itsdangerous>=2.1
+httpx>=0.27
