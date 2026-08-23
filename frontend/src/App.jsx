@@ -258,7 +258,6 @@ export default function App() {
           )}
           {messages.map((m, i) => (
             <div key={i} className={`msg ${m.role}`}>
-              <div className="msg-role">{m.role === "user" ? "You" : "Ask WEKA"}</div>
               <div className="msg-content">
                 {m.content ? (
                   <ReactMarkdown>{m.content}</ReactMarkdown>

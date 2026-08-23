@@ -4,12 +4,15 @@
 }
 
 :root {
-  --bg: #1a1a17;
-  --panel: #23231f;
-  --border: #3a3a34;
-  --text: #e8e6dd;
-  --muted: #9b998f;
-  --accent: #d97757;
+  --bg: #0a0a12;
+  --panel: #14141f;
+  --border: #2a2a3a;
+  --text: #e8e7ee;
+  --muted: #9a98a8;
+  --accent: #7c03ec;
+  --accent-hover: #9440f5;
+  --accent-soft: rgba(124, 3, 236, 0.14);
+  --bubble: #1b1b29;
 }
 
 body {
@@ -44,7 +47,7 @@ body {
   cursor: pointer;
 }
 .new-chat:hover {
-  opacity: 0.9;
+  background: var(--accent-hover);
 }
 
 .conv-list {
@@ -131,18 +134,23 @@ body {
   margin: 0 auto 24px;
   padding: 0 24px;
 }
-.msg-role {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--muted);
-  margin-bottom: 4px;
-}
-.msg.user .msg-role {
-  color: var(--accent);
-}
 .msg-content {
   font-size: 15px;
   line-height: 1.6;
+}
+.msg.user {
+  display: flex;
+  justify-content: flex-end;
+}
+.msg.user .msg-content {
+  max-width: 70%;
+  background: var(--bubble);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 10px 14px;
+}
+.msg.user .msg-content > *:last-child {
+  margin-bottom: 0;
 }
 .msg-content p,
 .msg-content ul,
@@ -199,7 +207,7 @@ body {
 .fb-btn.selected {
   opacity: 1;
   border-color: var(--accent);
-  background: rgba(217, 119, 87, 0.12);
+  background: var(--accent-soft);
 }
 .fb-btn.big {
   font-size: 20px;
