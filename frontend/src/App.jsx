@@ -255,7 +255,15 @@ export default function App() {
     }
   };
 
-  if (user === undefined) return null; // still checking session
+  if (user === undefined)
+    return (
+      <div className="login-page">
+        <div className="login-card">
+          <h1>Ask WEKA</h1>
+          <p>Loading…</p>
+        </div>
+      </div>
+    ); // still checking session
 
   // Always show the sign-in screen first — never bounce straight to Okta.
   const loginScreen = (message) => (
