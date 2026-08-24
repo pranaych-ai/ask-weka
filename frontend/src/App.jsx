@@ -257,25 +257,29 @@ export default function App() {
 
   if (user === undefined) return null; // still checking session
 
+  // Always show the sign-in screen first — never bounce straight to Okta.
+  const loginScreen = (message) => (
+    <div className="login-page">
+      <div className="login-card">
+        <h1>Ask WEKA</h1>
+        <p>{message}</p>
+        <a className="login-btn" href="/auth/login">
+          Sign in with Okta
+        </a>
+      </div>
+    </div>
+  );
+
   if (window.location.pathname.startsWith("/admin")) {
-    if (user === null) window.location.href = "/auth/login";
-    else if (!user.is_admin) return <div className="admin-denied">403 — Admin access required. <a href="/">Back to Ask WEKA</a></div>;
-    else return <Admin user={user} />;
-    return null;
+    if (user === null)
+      return loginScreen("Sign in with your WEKA Okta account to access the admin portal.");
+    if (!user.is_admin)
+      return <div className="admin-denied">403 — Admin access required. <a href="/">Back to Ask WEKA</a></div>;
+    return <Admin user={user} />;
   }
 
   if (user === null)
-    return (
-      <div className="login-page">
-        <div className="login-card">
-          <h1>Ask WEKA</h1>
-          <p>Sign in with your WEKA Okta account to continue.</p>
-          <a className="login-btn" href="/auth/login">
-            Sign in with Okta
-          </a>
-        </div>
-      </div>
-    );
+    return loginScreen("Sign in with your WEKA Okta account to continue.");
 
   return (
     <div className="app">
