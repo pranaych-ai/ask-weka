@@ -1,56 +1,69 @@
-# Ask WEKA — App Architecture (per weka-architecture skill)
+# Ask WEKA — Architecture Notes
 
-This is the app-specific instance of the WEKA golden architecture standard
-(`.agents/skills/weka-architecture/SKILL.md`). The reference design and build
-plan for this app lives in [reference-architecture.md](reference-architecture.md).
+Internal AI assistant for WEKA employees (HR/IT questions over the internal knowledge base).
 
-## Gate 1 deliverables
+## Stack
 
-| Artifact | Status |
-|---|---|
-| Lucid architecture diagram | TODO — draft PNGs exist in [docs/images/](images/); needs a proper Lucid version |
-| ERD | TODO — current tables: conversations, messages (see backend/models.py); target schema in reference-architecture.md §2 |
-| Integrations & data-flow diagram | TODO |
-| RBAC design doc | TODO — target roles/KB scopes described in reference-architecture.md §4 |
+- **Backend**: Python / FastAPI (serves the API and the built React frontend)
+- **Frontend**: React 18 + Vite
+- **Database**: PostgreSQL (Replit-managed; `DATABASE_URL`), SQLAlchemy ORM
+- **LLM**: Gemini via `google-genai` (`GEMINI_API_KEY`, model via `GEMINI_MODEL`)
+- **Auth**: Okta SSO (OIDC via authlib) — no local accounts
 
-## Ownership & classification
+> Approved deviation note: this app predates the Express/TypeScript golden
+> stack; it uses FastAPI + SQLAlchemy. Structure still follows the five-layer
+> model (client / API+auth / services / data / external).
 
-- **Owner**: Pranay Chandur · **Backup owner**: TODO
-- **Data classification**: **internal, including limited employee contact data.** The knowledge base (`knowledge/kb.md`) is a real export of the WEKA IT and HR knowledge bases — 118 articles plus 32 service-portal request types, ~67k tokens. It contains 49 distinct `@weka.io` addresses, 14 of them named individuals (HR and IT contacts by region), which is personal data under GDPR even though it is low-sensitivity work contact information. Scanned for credentials on import: none found (one `?secret=...` match was a documented webhook URL placeholder). No customer data.
-- **Criticality**: low (POC). Graduation criteria: move off Replit / re-review if the app gains confidential or PII data, a large user base, write access to core systems, or SLA-bound uptime.
+## RBAC design (roles ↔ Okta groups)
 
-## SDLC status
+| Role  | Okta group (dl-app-* convention) | Access |
+|-------|----------------------------------|--------|
+| User  | any authenticated WEKA employee assigned to the app | Chat, own conversations, feedback |
+| Admin | `dl-app-askweka-admin` (override via `OKTA_ADMIN_GROUPS`, comma-separated) | Everything above + `/admin` portal and all `/api/admin/*` routes |
 
-- **Gate 0 intake**: NOT yet submitted — [submit here](https://service.desk.weka.io/servicedesk/customer/portal/1407/group/1490/create/2204). Required before further significant build work.
-- **Okta app registration**: not opened. Blocker for production.
+- Group claims come from the OIDC `groups` scope; the Okta authorization
+  server must include a **groups claim** for this app (ask IT).
+- **ACTION FOR IT**: create the `dl-app-askweka` and `dl-app-askweka-admin`
+  Okta groups and assign the app + members.
+- **Temporary bootstrap exception**: `OKTA_ADMIN_USERS` (comma-separated
+  usernames/emails) grants admin until the dl-app-* groups exist. This is a
+  deliberate, documented deviation — remove the env var once IT creates the
+  groups so role resolution is group-only.
+- Authorization is enforced **server-side** on every `/api/admin` route
+  (`require_admin` dependency); the client-side gate is UX only.
+- Dev mode (Okta env vars unset) runs with an anonymous user that has admin,
+  so the portal can be developed locally. Production always has Okta set.
+- Sessions: ≤ 8 h idle, ≤ 24 h absolute (WEKA policy), enforced in
+  `backend/auth.py`.
+
+## Audit trail
+
+- `activity_log` table records who/what/when: logins, logouts, feedback
+  submissions, conversation deletions, and all future admin actions.
+- Events only — never secrets or raw PII values.
+- Read-only viewer in the admin portal (Audit page) with filters and paging.
+- **TODO (before broad prod rollout)**: forward structured logs to a central,
+  tamper-resistant sink (Google Cloud Logging or Snowflake per IT standard);
+  retention 12 months hot + 24 months cold.
+
+## Data classification & retention
+
+- Data: internal (questions/answers over internal KB), usernames/emails from
+  Okta. No customer data.
+- Retention: conversations and feedback kept until deleted by the user/admin;
+  audit log retained per the policy above. (To be finalized with IT.)
+
+## SDLC / governance status
+
+- Gate 0 intake form: **confirm with owner** (register via IT SW / AI Solution
+  request portal if not done).
+- Okta app registration: dev + prod redirect URIs registered.
+- Deployment: private visibility until SSO rollout is approved.
+- Planned MCP endpoint and new integrations re-enter the framework at Gate 1.
 
 ## Secrets
 
-- `GEMINI_API_KEY` (Replit Secrets). TODO: replace with an IT-issued key from the Gemini API issuance process (naming: `gemini-<username>-<team>`), and split per environment before a prod deployment exists.
-- `DATABASE_URL` (provisioned by Replit Postgres).
-- **Rotation plan**: rotate all keys at least annually and immediately on owner change, offboarding, or suspected compromise. TODO: confirm issuance/rotation tickets with IT.
-
-## Retention & deletion
-
-- Conversations and messages are stored in Postgres indefinitely for the POC. TODO before prod: define a retention window (proposal: 12 months, then hard delete) and a user-requested deletion path, and confirm with IT.
-- Knowledge base file (`knowledge/kb.md`) is a point-in-time export compiled August 2026 from a Google Doc that merges the Notion IT/HR KBs. It is committed to the (private) repo, so it also lands in GitHub and Replit. Deleting an article from the file and redeploying removes it from the prompt. There is no automatic revocation path yet — if a Notion page becomes restricted, the export must be regenerated by hand. The sync worker in reference-architecture.md §2 is what eventually fixes this.
-- The system prompt is cached server-side by Gemini (see Deviations note on caching). Cached content is held by Google for the configured TTL (1 hour by default) and keyed to our API key.
-- Encryption at rest is provided by the managed Postgres (Replit/Neon) — IT to confirm.
-
-## Deviations from the weka-architecture skill (pending IT approval)
-
-None of these have been approved yet — flagged for IT review (#it-help):
-
-1. **Backend is Python/FastAPI + SQLAlchemy, not Express/TypeScript + Drizzle.** Frontend is React+Vite (per standard) but JavaScript without Tailwind. There is no `shared/schema.ts`; validation uses Pydantic instead of Zod.
-2. **No Okta SSO yet.** The POC has no authentication. Acceptable only while the Repl is private dev with placeholder data; Okta OIDC + RBAC middleware (with ≤8h idle / ≤24h absolute sessions, `dl-app-askweka-*` groups) is the next milestone before any shared use.
-3. **No audit-trail table or central log forwarding yet.** Required before prod.
-4. **AI feature isolation**: the entire app is an AI feature; LLM code is confined to `backend/providers/`. First AI feature triggers IT's elevated review (prompt injection, data exposure, output logging) before prod.
-5. **Real internal data in a pre-Gate-3 prototype.** The weka-architecture skill's prototype-stage rules require "synthetic/anonymized data only" until Gate 3 clearance. Loading the real IT/HR knowledge base on 2026-08-23 breaks that rule. It is also a new data type under re-entry trigger 4, which puts the app back at **Gate 1**. Mitigations in place: the Repl and repo are private, the data is internal-classified with no customer data, and no credentials are present. **Needs IT confirmation (#it-help) before the app is shown to anyone outside the owner.**
-6. **Knowledge base sent to Gemini and cached server-side.** All 67k tokens of the IT/HR KB are transmitted to `generativelanguage.googleapis.com` on first request and held in Google's context cache for the TTL. This is bulk internal-data egress to an external service, so it depends on Gemini being on WEKA's approved-services list for this data class — confirm with IT. Set `GEMINI_CACHE=0` to disable caching (costs more per request, retains nothing server-side beyond the request).
-
-## Integrations / outbound calls
-
-| Service | Purpose | Data sent | Credential |
-|---|---|---|---|
-| Gemini API (generativelanguage.googleapis.com) | Chat completions + context caching | Full IT/HR knowledge base (~67k tokens) and every user message | `GEMINI_API_KEY` — TODO: IT-issued |
-| Notion API | KB sync (planned; currently a manual Google Doc export into knowledge/kb.md) | — | TODO: IT service account |
+- All secrets in Replit Secrets: `GEMINI_API_KEY`, `SESSION_SECRET`,
+  `OKTA_ISSUER`, `OKTA_CLIENT_ID`, `OKTA_CLIENT_SECRET`.
+- Rotation: minimum annually, and immediately on owner change/offboarding or
+  suspected compromise.

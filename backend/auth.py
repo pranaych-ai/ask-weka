@@ -21,11 +21,29 @@ from authlib.integrations.starlette_client import OAuth, OAuthError
 from fastapi import APIRouter, HTTPException, Request
 from starlette.responses import RedirectResponse
 
+from .audit import log_event_standalone
+
 OKTA_ISSUER = os.environ.get("OKTA_ISSUER", "").rstrip("/")
 OKTA_CLIENT_ID = os.environ.get("OKTA_CLIENT_ID", "")
 OKTA_CLIENT_SECRET = os.environ.get("OKTA_CLIENT_SECRET", "")
 
 AUTH_ENABLED = bool(OKTA_ISSUER and OKTA_CLIENT_ID and OKTA_CLIENT_SECRET)
+
+# Okta group that grants admin access (dl-app-<appname> convention).
+# Comma-separated to allow e.g. "dl-app-askweka-admin,dl-app-askweka-admin-dev".
+ADMIN_GROUPS = {
+    g.strip()
+    for g in os.environ.get("OKTA_ADMIN_GROUPS", "dl-app-askweka-admin").split(",")
+    if g.strip()
+}
+
+# Bootstrap fallback until IT creates the dl-app-* groups: comma-separated
+# usernames/emails that get admin. Prefer groups once they exist.
+ADMIN_USERS = {
+    u.strip().lower()
+    for u in os.environ.get("OKTA_ADMIN_USERS", "").split(",")
+    if u.strip()
+}
 
 IDLE_TIMEOUT_S = 8 * 3600      # WEKA policy: <= 8 hours idle
 ABSOLUTE_TIMEOUT_S = 24 * 3600  # WEKA policy: <= 24 hours absolute
@@ -39,14 +57,20 @@ if AUTH_ENABLED:
         client_id=OKTA_CLIENT_ID,
         client_secret=OKTA_CLIENT_SECRET,
         server_metadata_url=f"{OKTA_ISSUER}/.well-known/openid-configuration",
-        client_kwargs={"scope": "openid profile email"},
+        client_kwargs={"scope": "openid profile email groups"},
     )
 
 
 def current_user(request: Request) -> dict | None:
     """Return the session user, enforcing idle + absolute timeouts."""
     if not AUTH_ENABLED:
-        return {"username": "anonymous", "name": "Dev mode (no SSO)", "email": ""}
+        # Dev mode: anonymous user gets admin so the portal can be developed.
+        return {
+            "username": "anonymous",
+            "name": "Dev mode (no SSO)",
+            "email": "",
+            "is_admin": True,
+        }
     user = request.session.get("user")
     if not user:
         return None
@@ -66,6 +90,14 @@ def require_user(request: Request) -> dict:
     user = current_user(request)
     if not user:
         raise HTTPException(401, "Not authenticated")
+    return user
+
+
+def require_admin(request: Request) -> dict:
+    """Server-side RBAC gate for every /api/admin route."""
+    user = require_user(request)
+    if not user.get("is_admin"):
+        raise HTTPException(403, "Admin access required")
     return user
 
 
@@ -90,18 +122,29 @@ async def auth_callback(request: Request):
         raise HTTPException(401, f"Okta sign-in failed: {e.error}")
     claims = token.get("userinfo") or {}
     now = time.time()
+    groups = claims.get("groups") or []
+    username = claims.get("preferred_username") or claims.get("email") or "unknown"
+    is_admin = bool(ADMIN_GROUPS & {str(g) for g in groups}) or (
+        username.lower() in ADMIN_USERS
+        or (claims.get("email", "") or "").lower() in ADMIN_USERS
+    )
     request.session["user"] = {
-        "username": claims.get("preferred_username") or claims.get("email") or "unknown",
+        "username": username,
         "name": claims.get("name", ""),
         "email": claims.get("email", ""),
+        "is_admin": is_admin,
         "logged_in_at": now,
         "last_seen": now,
     }
+    log_event_standalone(username, "login", f"admin={is_admin}")
     return RedirectResponse("/")
 
 
 @router.get("/auth/logout")
 async def logout(request: Request):
+    user = request.session.get("user")
+    if user:
+        log_event_standalone(user.get("username", "unknown"), "logout")
     request.session.clear()
     return RedirectResponse("/")
 
@@ -115,5 +158,6 @@ def me(request: Request):
         "username": user["username"],
         "name": user.get("name", ""),
         "email": user.get("email", ""),
+        "is_admin": bool(user.get("is_admin")),
         "auth_enabled": AUTH_ENABLED,
     }

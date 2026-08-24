@@ -10,6 +10,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from .admin import router as admin_router
+from .audit import log_event
 from .auth import AUTH_ENABLED, require_user
 from .auth import router as auth_router
 from .db import Base, engine, get_db, SessionLocal
@@ -23,20 +25,59 @@ HISTORY_BUDGET = 30
 
 Base.metadata.create_all(bind=engine)
 
+# Lightweight migration: add conversations.username for pre-existing tables
+# (create_all does not alter existing tables).
+with engine.begin() as _conn:
+    from sqlalchemy import text as _text
+
+    _dialect = engine.dialect.name
+    if _dialect == "postgresql":
+        _conn.execute(_text(
+            "ALTER TABLE conversations ADD COLUMN IF NOT EXISTS "
+            "username VARCHAR(120) NOT NULL DEFAULT 'anonymous'"
+        ))
+        _conn.execute(_text(
+            "CREATE INDEX IF NOT EXISTS ix_conversations_username "
+            "ON conversations (username)"
+        ))
+    else:  # sqlite (local dev)
+        _cols = [r[1] for r in _conn.exec_driver_sql("PRAGMA table_info(conversations)")]
+        if "username" not in _cols:
+            _conn.exec_driver_sql(
+                "ALTER TABLE conversations ADD COLUMN username VARCHAR(120) "
+                "NOT NULL DEFAULT 'anonymous'"
+            )
+
 app = FastAPI(title="Ask WEKA POC")
 
 import os
 
 from starlette.middleware.sessions import SessionMiddleware
 
+# Fail closed in production: never run deployed without SSO and a real secret.
+IS_DEPLOYMENT = bool(os.environ.get("REPLIT_DEPLOYMENT"))
+SESSION_SECRET = os.environ.get("SESSION_SECRET", "")
+if IS_DEPLOYMENT:
+    if not AUTH_ENABLED:
+        raise RuntimeError(
+            "Refusing to start in production without Okta SSO configured "
+            "(OKTA_ISSUER / OKTA_CLIENT_ID / OKTA_CLIENT_SECRET)."
+        )
+    if len(SESSION_SECRET) < 32:
+        raise RuntimeError(
+            "Refusing to start in production without a strong SESSION_SECRET "
+            "(>= 32 chars) set in deployment secrets."
+        )
+
 app.add_middleware(
     SessionMiddleware,
-    secret_key=os.environ.get("SESSION_SECRET", "dev-only-insecure"),
+    secret_key=SESSION_SECRET or "dev-only-insecure",
     max_age=8 * 3600,  # cookie lifetime = idle limit; absolute enforced in auth.py
     same_site="lax",
-    https_only=False,  # TLS terminates at the Replit proxy
+    https_only=IS_DEPLOYMENT,  # Secure cookies in prod; TLS terminates at the Replit proxy
 )
 app.include_router(auth_router)
+app.include_router(admin_router)
 
 
 @app.get("/api/healthz")
@@ -64,7 +105,12 @@ class MessageOut(BaseModel):
 def list_conversations(
     db: Session = Depends(get_db), user: dict = Depends(require_user)
 ) -> list[ConversationOut]:
-    rows = db.query(Conversation).order_by(Conversation.updated_at.desc()).all()
+    rows = (
+        db.query(Conversation)
+        .filter(Conversation.username == user["username"])
+        .order_by(Conversation.updated_at.desc())
+        .all()
+    )
     return [
         ConversationOut(id=c.id, title=c.title, updated_at=c.updated_at.isoformat())
         for c in rows
@@ -78,7 +124,7 @@ def list_messages(
     user: dict = Depends(require_user),
 ) -> list[MessageOut]:
     conv = db.get(Conversation, conversation_id)
-    if not conv:
+    if not conv or conv.username != user["username"]:
         raise HTTPException(404, "Conversation not found")
     return [MessageOut(id=m.id, role=m.role, content=m.content) for m in conv.messages]
 
@@ -90,9 +136,10 @@ def delete_conversation(
     user: dict = Depends(require_user),
 ):
     conv = db.get(Conversation, conversation_id)
-    if not conv:
+    if not conv or conv.username != user["username"]:
         raise HTTPException(404, "Conversation not found")
     db.delete(conv)
+    log_event(db, user["username"], "conversation.delete", f"id={conversation_id}")
     db.commit()
     return {"ok": True}
 
@@ -151,7 +198,7 @@ def submit_feedback(
     # Question and answer are loaded server-side from the stored message —
     # never trusted from the client.
     msg = db.get(Message, req.message_id)
-    if not msg or msg.role != "assistant":
+    if not msg or msg.role != "assistant" or msg.conversation.username != user["username"]:
         raise HTTPException(404, "Assistant message not found")
     answer = msg.content
     question = ""
@@ -181,6 +228,12 @@ def submit_feedback(
     fb.logged_time = datetime.now(timezone.utc)
     fb.cited_sources = "\n".join(_extract_sources(answer))
     fb.domain = _classify_domain(question, answer)
+    log_event(
+        db,
+        username,
+        "feedback.submit",
+        f"message_id={msg.id} thumbs={fb.thumbs or 'none'} has_text={bool(fb.feedback_text)}",
+    )
     db.commit()
     return {"ok": True, "id": fb.id}
 
@@ -208,14 +261,17 @@ async def chat(req: ChatRequest, user: dict = Depends(require_user)):
     try:
         if req.conversation_id:
             conv = db.get(Conversation, req.conversation_id)
-            if not conv:
+            if not conv or conv.username != user["username"]:
                 raise HTTPException(404, "Conversation not found")
         else:
             title = req.message.strip().splitlines()[0][:60]
-            conv = Conversation(title=title)
+            conv = Conversation(title=title, username=user["username"])
             db.add(conv)
+            db.flush()  # assign conv.id so audit details reference IDs, never content
+            log_event(db, user["username"], "conversation.create", f"id={conv.id}")
 
         conv.messages.append(Message(role="user", content=req.message))
+        log_event(db, user["username"], "chat.message", f"conversation_id={conv.id}")
         db.commit()
         conversation_id = conv.id
         conversation_title = conv.title
@@ -254,6 +310,13 @@ async def chat(req: ChatRequest, user: dict = Depends(require_user)):
                     db2.add(msg)
                     conv2 = db2.get(Conversation, conversation_id)
                     conv2.updated_at = datetime.now(timezone.utc)
+                    db2.flush()  # assign msg.id for the audit record
+                    log_event(
+                        db2,
+                        user["username"],
+                        "chat.response",
+                        f"conversation_id={conversation_id} message_id={msg.id}",
+                    )
                     db2.commit()
                     assistant_message_id = msg.id
                 finally:

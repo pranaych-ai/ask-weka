@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
+import Admin from "./Admin.jsx";
 
 function FeedbackBar({ messageId, question }) {
   const [thumbs, setThumbs] = useState(null);
@@ -230,6 +231,13 @@ export default function App() {
 
   if (user === undefined) return null; // still checking session
 
+  if (window.location.pathname.startsWith("/admin")) {
+    if (user === null) window.location.href = "/auth/login";
+    else if (!user.is_admin) return <div className="admin-denied">403 — Admin access required. <a href="/">Back to Ask WEKA</a></div>;
+    else return <Admin user={user} />;
+    return null;
+  }
+
   if (user === null)
     return (
       <div className="login-page">
@@ -271,6 +279,11 @@ export default function App() {
           <div className="user-line" title={user.email}>
             {user.name || user.username}
           </div>
+          {user.is_admin && (
+            <a className="logout-link" href="/admin">
+              Admin
+            </a>
+          )}
           {user.auth_enabled && (
             <a className="logout-link" href="/auth/logout">
               Sign out
