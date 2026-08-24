@@ -1,0 +1,120 @@
+"""MCP endpoint (HTTP transport) exposing the ask_weka tool.
+
+Per WEKA policy, AI clients access data through MCP — never the database.
+This is a minimal, dependency-free implementation of the MCP streamable-HTTP
+transport (JSON-RPC 2.0 over POST, JSON responses). Authentication uses a
+scoped, expiring bearer token issued from the admin portal (kind="mcp").
+
+Upgrade path (documented in docs/INTEGRATIONS.md): replace bearer tokens with
+a full OAuth authorization-server flow when IT provisions one.
+"""
+
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import JSONResponse, Response
+
+from .analysis import extract_sources
+from .api_keys import require_mcp_token
+from .models import ApiKey
+from .prompts import build_system_prompt
+from .providers import get_provider
+
+router = APIRouter()
+
+PROTOCOL_VERSION = "2024-11-05"
+
+ASK_TOOL = {
+    "name": "ask_weka",
+    "description": (
+        "Ask the WEKA internal assistant a question about HR and IT policies, "
+        "tools, and processes. Returns an answer grounded in the internal "
+        "knowledge base, with cited sources."
+    ),
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "question": {"type": "string", "description": "The question to ask"}
+        },
+        "required": ["question"],
+    },
+}
+
+
+def _rpc_result(id_, result: dict) -> JSONResponse:
+    return JSONResponse({"jsonrpc": "2.0", "id": id_, "result": result})
+
+
+def _rpc_error(id_, code: int, message: str, status: int = 200) -> JSONResponse:
+    return JSONResponse(
+        {"jsonrpc": "2.0", "id": id_, "error": {"code": code, "message": message}},
+        status_code=status,
+    )
+
+
+async def _answer(question: str) -> dict:
+    provider = get_provider()
+    chunks: list[str] = []
+    async for chunk in provider.stream_chat(
+        build_system_prompt(), [{"role": "user", "content": question}]
+    ):
+        chunks.append(chunk)
+    answer = "".join(chunks)
+    sources = extract_sources(answer)
+    text = answer
+    if sources:
+        text += "\n\nCited sources:\n" + "\n".join(f"- {s}" for s in sources)
+    return {"content": [{"type": "text", "text": text}], "isError": False}
+
+
+@router.post("/mcp")
+async def mcp_endpoint(request: Request, token: ApiKey = Depends(require_mcp_token)):
+    try:
+        body = await request.json()
+    except Exception:
+        return _rpc_error(None, -32700, "Parse error", status=400)
+    if isinstance(body, list):
+        return _rpc_error(None, -32600, "Batch requests not supported", status=400)
+    method = body.get("method")
+    id_ = body.get("id")
+    params = body.get("params") or {}
+
+    # Notifications (no id) get 202 Accepted with no body per streamable HTTP.
+    if id_ is None:
+        return Response(status_code=202)
+
+    if method == "initialize":
+        return _rpc_result(id_, {
+            "protocolVersion": params.get("protocolVersion") or PROTOCOL_VERSION,
+            "capabilities": {"tools": {}},
+            "serverInfo": {"name": "ask-weka", "version": "1.0.0"},
+        })
+    if method == "ping":
+        return _rpc_result(id_, {})
+    if method == "tools/list":
+        return _rpc_result(id_, {"tools": [ASK_TOOL]})
+    if method == "tools/call":
+        if params.get("name") != "ask_weka":
+            return _rpc_error(id_, -32602, f"Unknown tool: {params.get('name')}")
+        question = ((params.get("arguments") or {}).get("question") or "").strip()
+        if not question:
+            return _rpc_error(id_, -32602, "question is required")
+        if len(question) > 4000:
+            return _rpc_error(id_, -32602, "question too long (max 4000 chars)")
+        try:
+            return _rpc_result(id_, await _answer(question))
+        except (RuntimeError, ValueError) as e:
+            return _rpc_result(id_, {
+                "content": [{"type": "text", "text": f"Model unavailable: {e}"}],
+                "isError": True,
+            })
+        except Exception as e:
+            return _rpc_result(id_, {
+                "content": [{"type": "text", "text": f"Error answering: {e}"}],
+                "isError": True,
+            })
+    return _rpc_error(id_, -32601, f"Method not found: {method}")
+
+
+@router.get("/mcp")
+def mcp_get(token: ApiKey = Depends(require_mcp_token)):
+    # SSE server->client stream is not used by this server.
+    raise HTTPException(405, "Use POST with JSON-RPC 2.0 messages")

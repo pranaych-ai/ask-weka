@@ -169,6 +169,48 @@ class KBSectionVersion(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 
+class ApiKey(Base):
+    """Admin-issued credentials for programmatic access.
+
+    kind="api": long-lived API key for POST /api/v1/ask (no expiry, revocable).
+    kind="mcp": scoped bearer token for the MCP endpoint (expires).
+    Only a SHA-256 hash is stored; the plaintext is shown once at creation.
+    """
+
+    __tablename__ = "api_keys"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    kind: Mapped[str] = mapped_column(String(10), default="api", index=True)  # api|mcp
+    name: Mapped[str] = mapped_column(String(200))
+    owner: Mapped[str] = mapped_column(String(120), default="")
+    scope: Mapped[str] = mapped_column(String(30), default="ask")  # ask-only for now
+    key_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    prefix: Mapped[str] = mapped_column(String(12), default="")  # display hint only
+    rate_limit_per_min: Mapped[int] = mapped_column(default=30)
+    revoked: Mapped[bool] = mapped_column(default=False)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    usage_count: Mapped[int] = mapped_column(default=0)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_by: Mapped[str] = mapped_column(String(120), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class ApiKeyUsage(Base):
+    """Per-request usage log for API keys (IDs and status only, no content)."""
+
+    __tablename__ = "api_key_usage"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    key_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("api_keys.id", ondelete="CASCADE"), index=True
+    )
+    endpoint: Mapped[str] = mapped_column(String(120), default="")
+    status_code: Mapped[int] = mapped_column(default=200)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_now, index=True
+    )
+
+
 class KnowledgeSource(Base):
     """External content source registry with sync status."""
 

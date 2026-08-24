@@ -477,3 +477,9 @@ body {
 .kb-body { width: 100%; box-sizing: border-box; padding: 10px; border: 1px solid #d5d6de; border-radius: 8px; font-family: ui-monospace, monospace; font-size: 12px; line-height: 1.5; resize: vertical; }
 .kb-editor-head { display: flex; justify-content: space-between; align-items: center; }
 .kb-editor h3 { font-size: 14px; margin: 18px 0 8px; }
+
+/* ---------- API keys / MCP ---------- */
+.key-secret { background: #fff7e6; border: 1px solid #f0c36d; border-radius: 10px; padding: 12px 14px; margin-bottom: 14px; }
+.key-secret-title { font-size: 13px; font-weight: 600; margin-bottom: 8px; }
+.key-secret-row { display: flex; align-items: center; gap: 8px; }
+.key-secret-row code { background: #fff; border: 1px solid #e3d4b0; border-radius: 6px; padding: 6px 10px; font-size: 12px; word-break: break-all; }

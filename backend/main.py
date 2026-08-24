@@ -108,8 +108,11 @@ app.add_middleware(
     same_site="lax",
     https_only=IS_DEPLOYMENT,  # Secure cookies in prod; TLS terminates at the Replit proxy
 )
+from .api_keys import router as keys_router  # noqa: E402
 from .kb_admin import router as kb_router  # noqa: E402
 from .knowledge import import_legacy_file_if_empty  # noqa: E402
+from .mcp_server import router as mcp_router  # noqa: E402
+from .public_api import router as public_router  # noqa: E402
 from .qa import router as qa_router  # noqa: E402
 
 # One-time import of the legacy knowledge/kb.md export into the database.
@@ -119,6 +122,9 @@ app.include_router(auth_router)
 app.include_router(admin_router)
 app.include_router(qa_router)
 app.include_router(kb_router)
+app.include_router(keys_router)
+app.include_router(public_router)
+app.include_router(mcp_router)
 
 
 @app.get("/api/healthz")

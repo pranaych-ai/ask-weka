@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import Qa from "./Qa.jsx";
 import Knowledge from "./Knowledge.jsx";
+import ApiKeys from "./ApiKeys.jsx";
+import Mcp from "./Mcp.jsx";
 
 async function api(path) {
   const res = await fetch(path);
@@ -127,15 +129,6 @@ function AuditPage() {
   );
 }
 
-function ComingSoon({ title }) {
-  return (
-    <div>
-      <h1>{title}</h1>
-      <p className="admin-soon">Coming soon — this section is planned as a follow-up.</p>
-    </div>
-  );
-}
-
 export default function Admin({ user }) {
   const [section, setSection] = useState("dashboard");
 
@@ -160,8 +153,8 @@ export default function Admin({ user }) {
         {section === "audit" && <AuditPage />}
         {section === "qa" && <Qa />}
         {section === "knowledge" && <Knowledge />}
-        {section === "apikeys" && <ComingSoon title="API key management" />}
-        {section === "mcp" && <ComingSoon title="MCP endpoint" />}
+        {section === "apikeys" && <ApiKeys />}
+        {section === "mcp" && <Mcp />}
       </main>
     </div>
   );
