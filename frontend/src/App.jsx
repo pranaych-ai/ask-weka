@@ -120,6 +120,9 @@ export default function App() {
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
   const [user, setUser] = useState(undefined); // undefined = loading, null = signed out
+  const [suggestions, setSuggestions] = useState([]);
+  const [domain, setDomain] = useState(""); // "" | "HR" | "IT"
+  const [sidebarOpen, setSidebarOpen] = useState(false); // mobile drawer
   const scrollRef = useRef(null);
 
   const refreshConversations = () =>
@@ -130,7 +133,10 @@ export default function App() {
       .then((res) => (res.ok ? res.json() : null))
       .then((me) => {
         setUser(me);
-        if (me) refreshConversations();
+        if (me) {
+          refreshConversations();
+          api("/api/suggestions").then(setSuggestions).catch(() => {});
+        }
       })
       .catch(() => setUser(null));
   }, []);
@@ -140,25 +146,45 @@ export default function App() {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
   }, [messages]);
 
+  // Navigation is blocked while a response streams so incoming deltas can
+  // never attach to a different conversation than the one that asked.
   const openConversation = async (id) => {
+    if (streaming) return;
     setActiveId(id);
+    setSidebarOpen(false);
+    // Restore the conversation's fixed scope so the chips reflect reality —
+    // the server enforces the stored scope regardless of what we send.
+    const conv = conversations.find((c) => c.id === id);
+    setDomain(conv?.domain || "");
     setMessages(await api(`/api/conversations/${id}/messages`));
   };
 
   const newConversation = () => {
+    if (streaming) return;
     setActiveId(null);
     setMessages([]);
+    setSidebarOpen(false);
   };
 
   const deleteConversation = async (id, e) => {
     e.stopPropagation();
+    if (streaming) return;
     await fetch(`/api/conversations/${id}`, { method: "DELETE" });
     if (id === activeId) newConversation();
     refreshConversations();
   };
 
-  const send = async () => {
-    const text = input.trim();
+  // Scope applies per conversation: switching it mid-conversation starts a
+  // fresh chat so earlier out-of-scope turns never feed the scoped request.
+  const toggleDomain = (d) => {
+    if (streaming) return;
+    const next = domain === d ? "" : d;
+    setDomain(next);
+    if (messages.length > 0) newConversation();
+  };
+
+  const send = async (preset) => {
+    const text = (preset ?? input).trim();
     if (!text || streaming) return;
     setInput("");
     setStreaming(true);
@@ -172,7 +198,7 @@ export default function App() {
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ conversation_id: activeId, message: text }),
+        body: JSON.stringify({ conversation_id: activeId, message: text, domain }),
       });
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
@@ -253,7 +279,8 @@ export default function App() {
 
   return (
     <div className="app">
-      <aside className="sidebar">
+      {sidebarOpen && <div className="sidebar-backdrop" onClick={() => setSidebarOpen(false)} />}
+      <aside className={`sidebar ${sidebarOpen ? "open" : ""}`}>
         <button className="new-chat" onClick={newConversation}>
           + New chat
         </button>
@@ -294,11 +321,51 @@ export default function App() {
       </aside>
 
       <main className="chat">
+        <div className="chat-topbar">
+          <button
+            className="menu-btn"
+            title="Conversations"
+            onClick={() => setSidebarOpen(!sidebarOpen)}
+          >
+            ☰
+          </button>
+          <span className="topbar-title">Ask WEKA</span>
+          <div className="domain-chips">
+            {["HR", "IT"].map((d) => (
+              <button
+                key={d}
+                className={`chip ${domain === d ? "on" : ""}`}
+                disabled={streaming}
+                title={`Scope answers to ${d} topics (starts a new chat)`}
+                onClick={() => toggleDomain(d)}
+              >
+                {d}
+              </button>
+            ))}
+          </div>
+        </div>
         <div className="messages" ref={scrollRef}>
           {messages.length === 0 && (
             <div className="empty">
               <h1>Ask WEKA</h1>
               <p>Ask anything about internal docs, processes, and tools.</p>
+              {suggestions.length > 0 && (
+                <div className="suggestions">
+                  {suggestions
+                    .filter((s) => !domain || !s.domain || s.domain === domain)
+                    .slice(0, 4)
+                    .map((s) => (
+                      <button
+                        key={s.question}
+                        className="suggestion"
+                        onClick={() => send(s.question)}
+                      >
+                        {s.domain && <span className="suggestion-tag">{s.domain}</span>}
+                        {s.question}
+                      </button>
+                    ))}
+                </div>
+              )}
             </div>
           )}
           {messages.map((m, i) => (

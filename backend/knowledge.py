@@ -23,8 +23,9 @@ from .models import KBSection
 KB_PATH = Path(os.getenv("KB_PATH", Path(__file__).resolve().parent.parent / "knowledge" / "kb.md"))
 
 # Cache keyed on a cheap DB stamp (count + latest update) so edits invalidate
-# it automatically across requests without a restart.
-_cache: dict = {"stamp": None, "text": ""}
+# it automatically across requests without a restart. One entry per domain
+# scope ("" = full KB, "HR"/"IT" = filtered).
+_cache: dict = {"stamp": None, "texts": {}}
 
 _HR_HINT = re.compile(r"\bHR\b|human resources|benefits|payroll|onboarding", re.IGNORECASE)
 _IT_HINT = re.compile(r"\bIT\b|service portal|software|security|network", re.IGNORECASE)
@@ -96,20 +97,23 @@ def _stamp(db) -> tuple:
     )
 
 
-def load_knowledge() -> str:
-    """Assemble the KB text from active sections (cached until sections change)."""
+def load_knowledge(domain: str = "") -> str:
+    """Assemble the KB text from active sections (cached until sections change).
+
+    domain "HR" or "IT" scopes the KB to that domain's sections plus untagged
+    ones (shared content like the service portal directory)."""
     db = SessionLocal()
     try:
         stamp = _stamp(db)
         if _cache["stamp"] != stamp:
-            rows = (
-                db.query(KBSection)
-                .filter(KBSection.active == True)  # noqa: E712
-                .order_by(KBSection.position.asc(), KBSection.created_at.asc())
-                .all()
-            )
-            _cache["text"] = "\n\n".join(s.body for s in rows if s.body.strip())
+            _cache["texts"] = {}
             _cache["stamp"] = stamp
-        return _cache["text"]
+        if domain not in _cache["texts"]:
+            q = db.query(KBSection).filter(KBSection.active == True)  # noqa: E712
+            if domain:
+                q = q.filter(KBSection.domain.in_(["", domain]))
+            rows = q.order_by(KBSection.position.asc(), KBSection.created_at.asc()).all()
+            _cache["texts"][domain] = "\n\n".join(s.body for s in rows if s.body.strip())
+        return _cache["texts"][domain]
     finally:
         db.close()

@@ -21,6 +21,7 @@ class Conversation(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     username: Mapped[str] = mapped_column(String(120), default="anonymous", index=True)
     title: Mapped[str] = mapped_column(String(200), default="New conversation")
+    domain: Mapped[str] = mapped_column(String(20), default="")  # "" | "HR" | "IT" scope
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_now, onupdate=_now

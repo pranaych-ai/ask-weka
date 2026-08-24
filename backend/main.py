@@ -47,6 +47,19 @@ with engine.begin() as _conn:
                 "NOT NULL DEFAULT 'anonymous'"
             )
 
+    # conversations.domain (per-conversation HR/IT scope filter)
+    if _dialect == "postgresql":
+        _conn.execute(_text(
+            "ALTER TABLE conversations ADD COLUMN IF NOT EXISTS "
+            "domain VARCHAR(20) NOT NULL DEFAULT ''"
+        ))
+    else:
+        _ccols = [r[1] for r in _conn.exec_driver_sql("PRAGMA table_info(conversations)")]
+        if "domain" not in _ccols:
+            _conn.exec_driver_sql(
+                "ALTER TABLE conversations ADD COLUMN domain VARCHAR(20) NOT NULL DEFAULT ''"
+            )
+
     # feedback.review_status (added for the QA dashboard)
     if _dialect == "postgresql":
         _conn.execute(_text(
@@ -139,6 +152,7 @@ def healthz():
 class ConversationOut(BaseModel):
     id: str
     title: str
+    domain: str
     updated_at: str
 
 
@@ -159,7 +173,9 @@ def list_conversations(
         .all()
     )
     return [
-        ConversationOut(id=c.id, title=c.title, updated_at=c.updated_at.isoformat())
+        ConversationOut(
+            id=c.id, title=c.title, domain=c.domain, updated_at=c.updated_at.isoformat()
+        )
         for c in rows
     ]
 
@@ -259,12 +275,45 @@ def submit_feedback(
     return {"ok": True, "id": fb.id}
 
 
+# ---------- Suggested starter questions ----------
+
+from .models import GoldenQuestion  # noqa: E402
+
+DEFAULT_SUGGESTIONS = [
+    {"question": "How do I request a new laptop?", "domain": "IT"},
+    {"question": "What benefits does WEKA offer?", "domain": "HR"},
+    {"question": "How do I reset my Okta password?", "domain": "IT"},
+    {"question": "How do I submit a PTO request?", "domain": "HR"},
+]
+
+
+@app.get("/api/suggestions")
+def suggestions(db: Session = Depends(get_db), user: dict = Depends(require_user)):
+    """Starter questions for the empty state, drawn from the golden-question
+    suite (admin-curated, known-good) with static fallbacks."""
+    rows = (
+        db.query(GoldenQuestion)
+        .filter(GoldenQuestion.active == True)  # noqa: E712
+        .order_by(GoldenQuestion.created_at.desc())
+        .limit(6)
+        .all()
+    )
+    out = [{"question": g.question, "domain": g.domain} for g in rows]
+    for d in DEFAULT_SUGGESTIONS:
+        if len(out) >= 6:
+            break
+        if all(d["question"] != o["question"] for o in out):
+            out.append(d)
+    return out[:6]
+
+
 # ---------- Chat (SSE streaming) ----------
 
 
 class ChatRequest(BaseModel):
     conversation_id: Optional[str] = None
     message: str
+    domain: str = ""  # "" | "HR" | "IT" — optional scope filter
 
 
 def _sse(payload: dict) -> str:
@@ -275,6 +324,8 @@ def _sse(payload: dict) -> str:
 async def chat(req: ChatRequest, user: dict = Depends(require_user)):
     if not req.message.strip():
         raise HTTPException(400, "Empty message")
+    if req.domain not in ("", "HR", "IT"):
+        raise HTTPException(400, "domain must be HR, IT, or empty")
 
     # Persist the user message (and create the conversation if needed) before
     # streaming starts, so history survives even if the stream dies mid-way.
@@ -284,9 +335,13 @@ async def chat(req: ChatRequest, user: dict = Depends(require_user)):
             conv = db.get(Conversation, req.conversation_id)
             if not conv or conv.username != user["username"]:
                 raise HTTPException(404, "Conversation not found")
+            # Scope is fixed at conversation creation; the stored value wins
+            # over whatever the client sends for later turns.
+            domain = conv.domain
         else:
+            domain = req.domain
             title = req.message.strip().splitlines()[0][:60]
-            conv = Conversation(title=title, username=user["username"])
+            conv = Conversation(title=title, username=user["username"], domain=domain)
             db.add(conv)
             db.flush()  # assign conv.id so audit details reference IDs, never content
             log_event(db, user["username"], "conversation.create", f"id={conv.id}")
@@ -307,7 +362,7 @@ async def chat(req: ChatRequest, user: dict = Depends(require_user)):
         provider = get_provider()
     except (RuntimeError, ValueError) as e:
         raise HTTPException(503, str(e))
-    system = build_system_prompt()
+    system = build_system_prompt(domain)
 
     async def event_stream():
         yield _sse({"conversation_id": conversation_id, "title": conversation_title})
