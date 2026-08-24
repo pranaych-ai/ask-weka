@@ -112,7 +112,7 @@ async def login(request: Request):
     return await oauth.okta.authorize_redirect(request, redirect_uri)
 
 
-@router.get("/auth/callback", name="auth_callback")
+@router.get("/api/callback", name="auth_callback")
 async def auth_callback(request: Request):
     if not AUTH_ENABLED:
         return RedirectResponse("/")
