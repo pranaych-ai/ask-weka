@@ -8,3 +8,4 @@ authlib>=1.3
 itsdangerous>=2.1
 httpx>=0.27
 pytest
+python-multipart>=0.0.9

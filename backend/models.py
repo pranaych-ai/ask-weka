@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, ForeignKey, String, Text
+from sqlalchemy import DateTime, ForeignKey, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .db import Base
@@ -127,3 +127,61 @@ class GoldenResult(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
     run: Mapped[GoldenRun] = relationship(back_populates="results")
+
+
+class KBSection(Base):
+    """Knowledge base section — the assistant prompt is assembled from active sections."""
+
+    __tablename__ = "kb_sections"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    title: Mapped[str] = mapped_column(String(300))
+    domain: Mapped[str] = mapped_column(String(20), default="")  # "IT" | "HR" | ""
+    body: Mapped[str] = mapped_column(Text, default="")
+    position: Mapped[int] = mapped_column(default=0)
+    active: Mapped[bool] = mapped_column(default=True)
+    version: Mapped[int] = mapped_column(default=1)
+    source_id: Mapped[str] = mapped_column(String(36), default="", index=True)
+    updated_by: Mapped[str] = mapped_column(String(120), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_now, onupdate=_now
+    )
+
+
+class KBSectionVersion(Base):
+    """Snapshot of a section before each edit — enables history and revert."""
+
+    __tablename__ = "kb_section_versions"
+    __table_args__ = (UniqueConstraint("section_id", "version", name="uq_kb_section_version"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    section_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("kb_sections.id", ondelete="CASCADE"), index=True
+    )
+    version: Mapped[int] = mapped_column()
+    title: Mapped[str] = mapped_column(String(300))
+    domain: Mapped[str] = mapped_column(String(20), default="")
+    body: Mapped[str] = mapped_column(Text, default="")
+    active: Mapped[bool] = mapped_column(default=True)
+    position: Mapped[int] = mapped_column(default=0)
+    edited_by: Mapped[str] = mapped_column(String(120), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class KnowledgeSource(Base):
+    """External content source registry with sync status."""
+
+    __tablename__ = "knowledge_sources"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    name: Mapped[str] = mapped_column(String(200))
+    type: Mapped[str] = mapped_column(String(30), default="upload")  # upload|notion|gdrive|manual
+    url: Mapped[str] = mapped_column(Text, default="")
+    notes: Mapped[str] = mapped_column(Text, default="")
+    domain: Mapped[str] = mapped_column(String(20), default="")  # default domain for synced sections
+    last_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_sync_status: Mapped[str] = mapped_column(String(20), default="never")  # never|ok|error
+    last_sync_detail: Mapped[str] = mapped_column(Text, default="")
+    created_by: Mapped[str] = mapped_column(String(120), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)

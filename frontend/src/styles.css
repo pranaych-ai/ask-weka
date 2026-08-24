@@ -465,3 +465,15 @@ body {
 .qa-result-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; margin-bottom: 6px; }
 .qa-flag { color: #8a6d00; font-size: 12px; margin-right: 8px; }
 .qa-answer { font-size: 13px; color: #334; white-space: pre-wrap; max-height: 200px; overflow-y: auto; background: #f8f8fb; border-radius: 8px; padding: 10px; margin: 6px 0; }
+
+/* ---------- Knowledge management ---------- */
+.kb-toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; gap: 10px; }
+.kb-add { background: #fff; border: 1px solid #e3e4ea; border-radius: 12px; padding: 14px; margin-bottom: 14px; }
+.kb-editor-row { display: flex; gap: 8px; margin-bottom: 10px; }
+.kb-editor-row input { flex: 1; padding: 8px 10px; border: 1px solid #d5d6de; border-radius: 8px; font-size: 13px; }
+.kb-editor-row select { padding: 8px 10px; border: 1px solid #d5d6de; border-radius: 8px; font-size: 13px; background: #fff; }
+.kb-save { padding: 8px 18px; border: none; border-radius: 8px; background: #6c3df4; color: #fff; font-size: 13px; cursor: pointer; }
+.kb-save:disabled { opacity: 0.5; }
+.kb-body { width: 100%; box-sizing: border-box; padding: 10px; border: 1px solid #d5d6de; border-radius: 8px; font-family: ui-monospace, monospace; font-size: 12px; line-height: 1.5; resize: vertical; }
+.kb-editor-head { display: flex; justify-content: space-between; align-items: center; }
+.kb-editor h3 { font-size: 14px; margin: 18px 0 8px; }

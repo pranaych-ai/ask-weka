@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import Qa from "./Qa.jsx";
+import Knowledge from "./Knowledge.jsx";
 
 async function api(path) {
   const res = await fetch(path);
@@ -158,7 +159,7 @@ export default function Admin({ user }) {
         {section === "dashboard" && <Dashboard />}
         {section === "audit" && <AuditPage />}
         {section === "qa" && <Qa />}
-        {section === "knowledge" && <ComingSoon title="Knowledge management" />}
+        {section === "knowledge" && <Knowledge />}
         {section === "apikeys" && <ComingSoon title="API key management" />}
         {section === "mcp" && <ComingSoon title="MCP endpoint" />}
       </main>

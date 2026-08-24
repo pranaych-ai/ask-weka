@@ -61,6 +61,25 @@ with engine.begin() as _conn:
                 "NOT NULL DEFAULT 'open'"
             )
 
+    # kb_section_versions.position (added so revert restores ordering)
+    if _dialect == "postgresql":
+        _conn.execute(_text(
+            "ALTER TABLE kb_section_versions ADD COLUMN IF NOT EXISTS "
+            "\"position\" INTEGER NOT NULL DEFAULT 0"
+        ))
+    else:
+        _vcols = [r[1] for r in _conn.exec_driver_sql("PRAGMA table_info(kb_section_versions)")]
+        if _vcols and "position" not in _vcols:
+            _conn.exec_driver_sql(
+                "ALTER TABLE kb_section_versions ADD COLUMN position INTEGER NOT NULL DEFAULT 0"
+            )
+
+    # Unique history versions per KB section (works on postgres and sqlite)
+    _conn.execute(_text(
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_kb_section_version "
+        "ON kb_section_versions (section_id, version)"
+    ))
+
 app = FastAPI(title="Ask WEKA POC")
 
 import os
@@ -89,11 +108,17 @@ app.add_middleware(
     same_site="lax",
     https_only=IS_DEPLOYMENT,  # Secure cookies in prod; TLS terminates at the Replit proxy
 )
+from .kb_admin import router as kb_router  # noqa: E402
+from .knowledge import import_legacy_file_if_empty  # noqa: E402
 from .qa import router as qa_router  # noqa: E402
+
+# One-time import of the legacy knowledge/kb.md export into the database.
+import_legacy_file_if_empty()
 
 app.include_router(auth_router)
 app.include_router(admin_router)
 app.include_router(qa_router)
+app.include_router(kb_router)
 
 
 @app.get("/api/healthz")

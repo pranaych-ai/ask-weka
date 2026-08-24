@@ -23,7 +23,10 @@ def admin_audited(request: Request) -> dict:
     """
     user = require_admin(request)
     section = request.url.path.removeprefix("/api/admin").strip("/") or "root"
-    log_event_standalone(user["username"], f"admin.{section}", str(request.url.query)[:500])
+    # Audit records parameter NAMES only — never values, which could carry
+    # content (e.g. KB text pasted into a query string).
+    param_keys = ",".join(sorted(request.query_params.keys()))
+    log_event_standalone(user["username"], f"admin.{section}", f"params={param_keys}"[:500])
     return user
 
 
