@@ -47,3 +47,8 @@ GEMINI_MODEL = "gemini-3.6-flash"
 [postMerge]
 path = "scripts/post-merge.sh"
 timeoutMs = 180000
+
+[deployment]
+deploymentTarget = "autoscale"
+run = ["bash", "-c", "uvicorn backend.main:app --host 0.0.0.0 --port ${PORT:-5000}"]
+build = ["bash", "-c", "cd frontend && npm ci --no-audit --no-fund && npm run build"]
