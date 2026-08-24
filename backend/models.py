@@ -76,3 +76,54 @@ class Feedback(Base):
     username: Mapped[str] = mapped_column(String(120), default="anonymous")
     cited_sources: Mapped[str] = mapped_column(Text, default="")
     domain: Mapped[str] = mapped_column(String(20), default="")  # "IT" | "HR" | ""
+    review_status: Mapped[str] = mapped_column(
+        String(20), default="open"
+    )  # "open" | "reviewed" | "resolved"
+
+
+class GoldenQuestion(Base):
+    """Admin-maintained regression test questions for answer quality."""
+
+    __tablename__ = "golden_questions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    question: Mapped[str] = mapped_column(Text)
+    expected_topic: Mapped[str] = mapped_column(Text, default="")
+    domain: Mapped[str] = mapped_column(String(20), default="")  # "IT" | "HR" | ""
+    active: Mapped[bool] = mapped_column(default=True)
+    created_by: Mapped[str] = mapped_column(String(120), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class GoldenRun(Base):
+    __tablename__ = "golden_runs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    started_by: Mapped[str] = mapped_column(String(120), default="")
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    status: Mapped[str] = mapped_column(String(20), default="running")  # running|done|error
+
+    results: Mapped[list["GoldenResult"]] = relationship(
+        back_populates="run", cascade="all, delete-orphan", order_by="GoldenResult.created_at"
+    )
+
+
+class GoldenResult(Base):
+    __tablename__ = "golden_results"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    run_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("golden_runs.id", ondelete="CASCADE"), index=True
+    )
+    question_id: Mapped[str] = mapped_column(String(36), default="")
+    question: Mapped[str] = mapped_column(Text)
+    expected_topic: Mapped[str] = mapped_column(Text, default="")
+    answer: Mapped[str] = mapped_column(Text, default="")
+    sources_count: Mapped[int] = mapped_column(default=0)
+    auto_flagged: Mapped[bool] = mapped_column(default=False)  # e.g. no cited sources
+    verdict: Mapped[str] = mapped_column(String(10), default="")  # "pass" | "fail" | ""
+    reviewed_by: Mapped[str] = mapped_column(String(120), default="")
+    error: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+    run: Mapped[GoldenRun] = relationship(back_populates="results")

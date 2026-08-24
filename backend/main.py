@@ -1,5 +1,4 @@
 import json
-import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -48,6 +47,20 @@ with engine.begin() as _conn:
                 "NOT NULL DEFAULT 'anonymous'"
             )
 
+    # feedback.review_status (added for the QA dashboard)
+    if _dialect == "postgresql":
+        _conn.execute(_text(
+            "ALTER TABLE feedback ADD COLUMN IF NOT EXISTS "
+            "review_status VARCHAR(20) NOT NULL DEFAULT 'open'"
+        ))
+    else:
+        _fcols = [r[1] for r in _conn.exec_driver_sql("PRAGMA table_info(feedback)")]
+        if "review_status" not in _fcols:
+            _conn.exec_driver_sql(
+                "ALTER TABLE feedback ADD COLUMN review_status VARCHAR(20) "
+                "NOT NULL DEFAULT 'open'"
+            )
+
 app = FastAPI(title="Ask WEKA POC")
 
 import os
@@ -76,8 +89,11 @@ app.add_middleware(
     same_site="lax",
     https_only=IS_DEPLOYMENT,  # Secure cookies in prod; TLS terminates at the Replit proxy
 )
+from .qa import router as qa_router  # noqa: E402
+
 app.include_router(auth_router)
 app.include_router(admin_router)
+app.include_router(qa_router)
 
 
 @app.get("/api/healthz")
@@ -146,35 +162,9 @@ def delete_conversation(
 
 # ---------- Feedback ----------
 
-HR_KEYWORDS = (
-    "hr", "payroll", "benefits?", "leaves?", "vacation", "pto", "hiring",
-    "onboarding", "offboarding", "salary", "compensation", "recruit(?:ing|er|ment)?",
-    "insurance", "401k", "holidays?", "maternity", "paternity", "bamboohr?",
-)
-_HR_RE = re.compile(r"\b(?:" + "|".join(HR_KEYWORDS) + r")\b", re.IGNORECASE)
-
-_MD_LINK = re.compile(r"\[[^\]]*\]\((https?://[^)\s]+)\)")
-_BARE_URL = re.compile(r"(?<!\()https?://[^\s)\]>\"']+")
-
-
-def _extract_sources(answer: str) -> list[str]:
-    sources = _MD_LINK.findall(answer)
-    for url in _BARE_URL.findall(answer):
-        if url not in sources:
-            sources.append(url)
-    return sources
-
-
-def _classify_domain(question: str, answer: str) -> str:
-    return "HR" if _HR_RE.search(f"{question}\n{answer}") else "IT"
-
-
-def _summarize(answer: str, limit: int = 300) -> str:
-    # Strip markdown links/formatting, collapse whitespace, truncate.
-    text = _MD_LINK.sub(lambda m: m.group(0).split("]")[0][1:], answer)
-    text = re.sub(r"[#*`>_|-]{1,}", " ", text)
-    text = re.sub(r"\s+", " ", text).strip()
-    return text[:limit] + ("…" if len(text) > limit else "")
+from .analysis import classify_domain as _classify_domain  # noqa: E402
+from .analysis import extract_sources as _extract_sources  # noqa: E402
+from .analysis import summarize as _summarize  # noqa: E402
 
 
 class FeedbackRequest(BaseModel):

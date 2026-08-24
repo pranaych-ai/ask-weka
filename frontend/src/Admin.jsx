@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import Qa from "./Qa.jsx";
 
 async function api(path) {
   const res = await fetch(path);
@@ -156,7 +157,7 @@ export default function Admin({ user }) {
       <main className="admin-main">
         {section === "dashboard" && <Dashboard />}
         {section === "audit" && <AuditPage />}
-        {section === "qa" && <ComingSoon title="QA workflows" />}
+        {section === "qa" && <Qa />}
         {section === "knowledge" && <ComingSoon title="Knowledge management" />}
         {section === "apikeys" && <ComingSoon title="API key management" />}
         {section === "mcp" && <ComingSoon title="MCP endpoint" />}
