@@ -39,6 +39,12 @@ app.add_middleware(
 app.include_router(auth_router)
 
 
+@app.get("/api/healthz")
+def healthz():
+    """Unauthenticated liveness probe for deployment health checks."""
+    return {"ok": True}
+
+
 # ---------- Conversations API ----------
 
 

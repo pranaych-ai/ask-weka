@@ -1,32 +1,27 @@
 kind = "api"
-previewPath = "/__unused-api" # TODO - should be excluded from preview in the first place
-title = "API Server"
+previewPath = "/"
+title = "Ask WEKA"
 version = "1.0.0"
 id = "3B4_FFSkEVBkAeYMFRJ2e"
 
 [[services]]
-localPort = 8080
-name = "API Server"
-paths = ["/__unused-api"]
+localPort = 8000
+name = "Ask WEKA"
+paths = ["/"]
 
 [services.development]
-run = "pnpm --filter @workspace/api-server run dev"
+run = "cd ../.. && bash start.sh"
 
 [services.production]
 
 [services.production.build]
-args = ["pnpm", "--filter", "@workspace/api-server", "run", "build"]
-
-[services.production.build.env]
-NODE_ENV = "production"
+args = ["bash", "-c", "cd frontend && npm ci --no-audit --no-fund && npm run build"]
 
 [services.production.run]
-# we don't run through pnpm to make startup faster in production
-args = ["node", "--enable-source-maps", "artifacts/api-server/dist/index.mjs"]
+args = ["bash", "-c", "uvicorn backend.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
 
 [services.production.run.env]
-PORT = "8080"
-NODE_ENV = "production"
+PORT = "8000"
 
 [services.production.health.startup]
 path = "/api/healthz"

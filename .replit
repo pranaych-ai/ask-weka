@@ -13,19 +13,7 @@ author = "agent"
 
 [[workflows.workflow.tasks]]
 task = "workflow.run"
-args = "Ask WEKA"
-
-[[workflows.workflow]]
-name = "Ask WEKA"
-author = "agent"
-
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "bash start.sh"
-waitForPort = 8000
-
-[workflows.workflow.metadata]
-outputType = "webview"
+args = "artifacts/api-server: Ask WEKA"
 
 [[ports]]
 localPort = 8000
