@@ -41,7 +41,10 @@ def _get_client() -> genai.Client:
 
 
 def judge_model() -> str:
-    return os.getenv("GEMINI_JUDGE_MODEL", "gemini-2.5-pro")
+    # gemini-pro-latest: stable alias that tracks the current pro-tier model,
+    # so judge grading survives individual model retirements. Distinct from the
+    # chat assistant's flash-tier model by design.
+    return os.getenv("GEMINI_JUDGE_MODEL", "gemini-pro-latest")
 
 
 async def judge_answer(question: str, expected_topic: str, answer: str) -> dict:
