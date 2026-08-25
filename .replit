@@ -31,6 +31,7 @@ externalPort = 8081
 
 [userenv.shared]
 GEMINI_MODEL = "gemini-3.6-flash"
+OKTA_ADMIN_USERS = "pranay.chandur@weka.io"
 
 [postMerge]
 path = "scripts/post-merge.sh"
