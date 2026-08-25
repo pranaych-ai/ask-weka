@@ -87,6 +87,27 @@ with engine.begin() as _conn:
                 "ALTER TABLE kb_section_versions ADD COLUMN position INTEGER NOT NULL DEFAULT 0"
             )
 
+    # golden_results.ai_verdict / ai_reasoning (LLM-as-a-judge grading)
+    if _dialect == "postgresql":
+        _conn.execute(_text(
+            "ALTER TABLE golden_results ADD COLUMN IF NOT EXISTS "
+            "ai_verdict VARCHAR(10) NOT NULL DEFAULT ''"
+        ))
+        _conn.execute(_text(
+            "ALTER TABLE golden_results ADD COLUMN IF NOT EXISTS "
+            "ai_reasoning TEXT NOT NULL DEFAULT ''"
+        ))
+    else:
+        _gcols = [r[1] for r in _conn.exec_driver_sql("PRAGMA table_info(golden_results)")]
+        if _gcols and "ai_verdict" not in _gcols:
+            _conn.exec_driver_sql(
+                "ALTER TABLE golden_results ADD COLUMN ai_verdict VARCHAR(10) NOT NULL DEFAULT ''"
+            )
+        if _gcols and "ai_reasoning" not in _gcols:
+            _conn.exec_driver_sql(
+                "ALTER TABLE golden_results ADD COLUMN ai_reasoning TEXT NOT NULL DEFAULT ''"
+            )
+
     # Unique history versions per KB section (works on postgres and sqlite)
     _conn.execute(_text(
         "CREATE UNIQUE INDEX IF NOT EXISTS uq_kb_section_version "

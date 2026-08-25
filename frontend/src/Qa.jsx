@@ -332,7 +332,16 @@ function Golden() {
               <div className="qa-result-head">
                 <b>{r.question}</b>
                 <span>
-                  {r.auto_flagged && <span className="qa-flag">⚠ {r.error ? "error" : "no sources"}</span>}
+                  {r.auto_flagged && (
+                    <span className="qa-flag">
+                      ⚠ {r.error ? "error" : r.ai_verdict === "fail" ? "AI fail" : "no sources"}
+                    </span>
+                  )}
+                  {r.ai_verdict && (
+                    <span className={`qa-ai-verdict ${r.ai_verdict}`}>
+                      AI: {r.ai_verdict}
+                    </span>
+                  )}
                   <button className={`qa-mini ${r.verdict === "pass" ? "on" : ""}`} onClick={() => setVerdict(r.id, r.verdict === "pass" ? "" : "pass")}>Pass</button>
                   <button className={`qa-mini ${r.verdict === "fail" ? "on" : ""}`} onClick={() => setVerdict(r.id, r.verdict === "fail" ? "" : "fail")}>Fail</button>
                 </span>
@@ -343,7 +352,15 @@ function Golden() {
               ) : (
                 <div className="qa-answer">{r.answer}</div>
               )}
-              <div className="admin-detail">{r.sources_count} source(s) cited{r.reviewed_by ? ` · verdict by ${r.reviewed_by}` : ""}</div>
+              {r.ai_reasoning && (
+                <div className={`qa-ai-reasoning ${r.ai_verdict || "none"}`}>
+                  <b>AI judge:</b> {r.ai_reasoning}
+                </div>
+              )}
+              <div className="admin-detail">
+                {r.sources_count} source(s) cited
+                {r.reviewed_by ? ` · verdict by ${r.reviewed_by} (overrides AI)` : ""}
+              </div>
             </div>
           ))}
         </div>

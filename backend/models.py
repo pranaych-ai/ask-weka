@@ -122,6 +122,8 @@ class GoldenResult(Base):
     answer: Mapped[str] = mapped_column(Text, default="")
     sources_count: Mapped[int] = mapped_column(default=0)
     auto_flagged: Mapped[bool] = mapped_column(default=False)  # e.g. no cited sources
+    ai_verdict: Mapped[str] = mapped_column(String(10), default="")  # judge: "pass"|"fail"|""
+    ai_reasoning: Mapped[str] = mapped_column(Text, default="")  # judge explanation / failure note
     verdict: Mapped[str] = mapped_column(String(10), default="")  # "pass" | "fail" | ""
     reviewed_by: Mapped[str] = mapped_column(String(120), default="")
     error: Mapped[str] = mapped_column(Text, default="")

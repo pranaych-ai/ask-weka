@@ -108,7 +108,14 @@ def test_golden_crud_run_and_verdict(monkeypatch):
     assert client.patch(f"/api/admin/qa/golden/{q1['id']}", json={"active": False}).json()["active"] is False
     assert client.patch(f"/api/admin/qa/golden/{q1['id']}", json={"active": True}).json()["active"] is True
 
+    async def fake_judge(question, expected_topic, answer):
+        # Grade the sourced answer pass, the unsourced one fail.
+        if "wiki" in answer:
+            return {"verdict": "pass", "reasoning": "Covers the expected topic."}
+        return {"verdict": "fail", "reasoning": "Evasive answer."}
+
     monkeypatch.setattr(qa_module, "get_provider", lambda: FakeProvider())
+    monkeypatch.setattr(qa_module, "judge_answer", fake_judge)
     _clear_audit()
     run = client.post("/api/admin/qa/golden/run").json()
     assert run["status"] == "done" and run["total"] == 2
@@ -116,6 +123,10 @@ def test_golden_crud_run_and_verdict(monkeypatch):
     cited = [r for r in run["results"] if not r["auto_flagged"]]
     assert len(flagged) == 1 and len(cited) == 1
     assert cited[0]["sources_count"] == 1
+    # AI judge verdicts recorded; effective run summary uses them
+    assert cited[0]["ai_verdict"] == "pass" and cited[0]["ai_reasoning"]
+    assert flagged[0]["ai_verdict"] == "fail"
+    assert run["passed"] == 1 and run["failed"] == 1
     actions = [a for a, _ in _audit_actions()]
     assert "qa.golden.run" in actions
 

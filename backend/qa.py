@@ -12,6 +12,7 @@ from .admin import admin_audited
 from .analysis import classify_domain, extract_sources
 from .audit import log_event
 from .db import SessionLocal, get_db
+from .judge import judge_answer
 from .models import Feedback, GoldenQuestion, GoldenResult, GoldenRun
 from .prompts import build_system_prompt
 from .providers import get_provider
@@ -232,8 +233,9 @@ def _run_out(r: GoldenRun, include_results: bool = False) -> dict:
         "started_at": r.started_at.isoformat(),
         "status": r.status,
         "total": len(r.results),
-        "passed": sum(1 for x in r.results if x.verdict == "pass"),
-        "failed": sum(1 for x in r.results if x.verdict == "fail"),
+        # Effective verdict: the human verdict when set, otherwise the AI judge's.
+        "passed": sum(1 for x in r.results if (x.verdict or x.ai_verdict) == "pass"),
+        "failed": sum(1 for x in r.results if (x.verdict or x.ai_verdict) == "fail"),
         "flagged": sum(1 for x in r.results if x.auto_flagged),
     }
     if include_results:
@@ -245,6 +247,8 @@ def _run_out(r: GoldenRun, include_results: bool = False) -> dict:
                 "answer": x.answer,
                 "sources_count": x.sources_count,
                 "auto_flagged": x.auto_flagged,
+                "ai_verdict": x.ai_verdict,
+                "ai_reasoning": x.ai_reasoning,
                 "verdict": x.verdict,
                 "reviewed_by": x.reviewed_by,
                 "error": x.error,
@@ -308,6 +312,14 @@ async def golden_run(user: dict = Depends(admin_audited)):
                 any_error = True
             answer = "".join(answer_parts)
             sources = extract_sources(answer)
+            ai_verdict, ai_reasoning = "", ""
+            if answer and not error:
+                try:
+                    graded = await judge_answer(gq.question, gq.expected_topic, answer)
+                    ai_verdict = graded["verdict"]
+                    ai_reasoning = graded["reasoning"]
+                except Exception as e:  # leave ungraded rather than invent a verdict
+                    ai_reasoning = f"AI grading unavailable: {str(e)[:500]}"
             db.add(
                 GoldenResult(
                     run_id=run_id,
@@ -316,7 +328,9 @@ async def golden_run(user: dict = Depends(admin_audited)):
                     expected_topic=gq.expected_topic,
                     answer=answer,
                     sources_count=len(sources),
-                    auto_flagged=(not sources) or bool(error),
+                    auto_flagged=(not sources) or bool(error) or ai_verdict == "fail",
+                    ai_verdict=ai_verdict,
+                    ai_reasoning=ai_reasoning,
                     error=error,
                 )
             )

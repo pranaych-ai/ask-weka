@@ -304,6 +304,35 @@ body {
   }
 }
 
+/* ---- AI judge ---- */
+.qa-ai-verdict {
+  display: inline-block;
+  padding: 1px 8px;
+  margin-right: 6px;
+  border-radius: 10px;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: capitalize;
+}
+.qa-ai-verdict.pass {
+  background: #e3f5e9;
+  color: #1a7f37;
+}
+.qa-ai-verdict.fail {
+  background: #fdeaea;
+  color: #b42318;
+}
+.qa-ai-reasoning {
+  margin-top: 6px;
+  padding: 6px 10px;
+  border-left: 3px solid #ccc;
+  font-size: 13px;
+  color: #444;
+  background: #fafafa;
+}
+.qa-ai-reasoning.pass { border-left-color: #1a7f37; }
+.qa-ai-reasoning.fail { border-left-color: #b42318; }
+
 /* ---- Feedback ---- */
 .feedback-bar {
   display: flex;
