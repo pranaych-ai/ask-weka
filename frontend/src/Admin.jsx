@@ -1,4 +1,24 @@
-import { useEffect, useState } from "react";
+import { Component, useEffect, useState } from "react";
+
+class SectionBoundary extends Component {
+  state = { error: null };
+  static getDerivedStateFromError(error) {
+    return { error };
+  }
+  componentDidUpdate(prev) {
+    if (prev.sectionKey !== this.props.sectionKey && this.state.error)
+      this.setState({ error: null });
+  }
+  render() {
+    if (this.state.error)
+      return (
+        <div className="admin-error">
+          This page hit an error: {String(this.state.error.message || this.state.error)}
+        </div>
+      );
+    return this.props.children;
+  }
+}
 import Qa from "./Qa.jsx";
 import Knowledge from "./Knowledge.jsx";
 import ApiKeys from "./ApiKeys.jsx";
@@ -149,12 +169,14 @@ export default function Admin({ user }) {
         <div className="admin-nav-footer" title={user.email}>{user.name || user.username}</div>
       </aside>
       <main className="admin-main">
-        {section === "dashboard" && <Dashboard />}
-        {section === "audit" && <AuditPage />}
-        {section === "qa" && <Qa />}
-        {section === "knowledge" && <Knowledge />}
-        {section === "apikeys" && <ApiKeys />}
-        {section === "mcp" && <Mcp />}
+        <SectionBoundary sectionKey={section}>
+          {section === "dashboard" && <Dashboard />}
+          {section === "audit" && <AuditPage />}
+          {section === "qa" && <Qa />}
+          {section === "knowledge" && <Knowledge />}
+          {section === "apikeys" && <ApiKeys />}
+          {section === "mcp" && <Mcp />}
+        </SectionBoundary>
       </main>
     </div>
   );

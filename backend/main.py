@@ -414,4 +414,8 @@ if DIST.exists():
 
     @app.get("/{path:path}")
     def spa(path: str):
-        return FileResponse(DIST / "index.html")
+        # index.html must never be cached: it references hashed asset names,
+        # and a stale copy makes browsers load an outdated (or missing) bundle.
+        return FileResponse(
+            DIST / "index.html", headers={"Cache-Control": "no-cache"}
+        )
