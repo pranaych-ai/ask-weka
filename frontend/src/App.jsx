@@ -239,6 +239,7 @@ export default function App() {
               copy[copy.length - 1] = {
                 role: "assistant",
                 content: `⚠️ Error: ${payload.error}`,
+                error: true,
               };
               return copy;
             });
@@ -247,7 +248,7 @@ export default function App() {
     } catch (err) {
       setMessages((m) => [
         ...m.slice(0, -1),
-        { role: "assistant", content: `⚠️ Request failed: ${err.message}` },
+        { role: "assistant", content: `⚠️ Request failed: ${err.message}`, error: true },
       ]);
     } finally {
       setStreaming(false);
@@ -382,9 +383,22 @@ export default function App() {
           )}
           {messages.map((m, i) => (
             <div key={i} className={`msg ${m.role}`}>
-              <div className="msg-content">
+              <div
+                className={`msg-content ${
+                  streaming && m.role === "assistant" && i === messages.length - 1 && m.content && !m.error
+                    ? "streaming-cursor"
+                    : ""
+                }`}
+              >
                 {m.content ? (
                   <ReactMarkdown>{m.content}</ReactMarkdown>
+                ) : m.role === "assistant" && streaming && i === messages.length - 1 ? (
+                  <span className="thinking-row" role="status" aria-live="polite">
+                    <span className="thinking-dots" aria-hidden="true">
+                      <span /><span /><span />
+                    </span>
+                    <span className="thinking-label">Thinking…</span>
+                  </span>
                 ) : (
                   <span className="thinking">…</span>
                 )}
