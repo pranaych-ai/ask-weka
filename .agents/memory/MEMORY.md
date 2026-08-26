@@ -1,1 +1,2 @@
 - [Gemini model retirement](gemini-model.md) — retired default model causes chat 404s; fix by bumping the GEMINI_MODEL env var, not code.
+- [GitHub sync](github-sync.md) — repo not auto-pushed; run scripts/sync-github.sh at end of each work session to push dev + main.
