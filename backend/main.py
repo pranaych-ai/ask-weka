@@ -87,6 +87,45 @@ with engine.begin() as _conn:
                 "ALTER TABLE kb_section_versions ADD COLUMN position INTEGER NOT NULL DEFAULT 0"
             )
 
+    # api_keys.enabled/allowed_domains + api_key_usage.question/on_behalf_of
+    # (Ask-WEKA-as-a-service: per-app off-switch, domain scoping, request log)
+    if _dialect == "postgresql":
+        _conn.execute(_text(
+            "ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS "
+            "enabled BOOLEAN NOT NULL DEFAULT TRUE"
+        ))
+        _conn.execute(_text(
+            "ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS "
+            "allowed_domains VARCHAR(60) NOT NULL DEFAULT ''"
+        ))
+        _conn.execute(_text(
+            "ALTER TABLE api_key_usage ADD COLUMN IF NOT EXISTS "
+            "question VARCHAR(500) NOT NULL DEFAULT ''"
+        ))
+        _conn.execute(_text(
+            "ALTER TABLE api_key_usage ADD COLUMN IF NOT EXISTS "
+            "on_behalf_of VARCHAR(120) NOT NULL DEFAULT ''"
+        ))
+    else:
+        _kcols = [r[1] for r in _conn.exec_driver_sql("PRAGMA table_info(api_keys)")]
+        if _kcols and "enabled" not in _kcols:
+            _conn.exec_driver_sql(
+                "ALTER TABLE api_keys ADD COLUMN enabled BOOLEAN NOT NULL DEFAULT 1"
+            )
+        if _kcols and "allowed_domains" not in _kcols:
+            _conn.exec_driver_sql(
+                "ALTER TABLE api_keys ADD COLUMN allowed_domains VARCHAR(60) NOT NULL DEFAULT ''"
+            )
+        _ucols = [r[1] for r in _conn.exec_driver_sql("PRAGMA table_info(api_key_usage)")]
+        if _ucols and "question" not in _ucols:
+            _conn.exec_driver_sql(
+                "ALTER TABLE api_key_usage ADD COLUMN question VARCHAR(500) NOT NULL DEFAULT ''"
+            )
+        if _ucols and "on_behalf_of" not in _ucols:
+            _conn.exec_driver_sql(
+                "ALTER TABLE api_key_usage ADD COLUMN on_behalf_of VARCHAR(120) NOT NULL DEFAULT ''"
+            )
+
     # golden_results.ai_verdict / ai_reasoning (LLM-as-a-judge grading)
     if _dialect == "postgresql":
         _conn.execute(_text(

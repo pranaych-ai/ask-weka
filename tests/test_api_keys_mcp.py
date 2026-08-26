@@ -165,7 +165,86 @@ def test_mcp_token_expiry_enforced():
     assert r.status_code == 401
 
 
+def test_enable_disable_toggle_and_usage_log(monkeypatch):
+    monkeypatch.setattr(public_module, "get_provider", _fake_get_provider)
+    out = _make_key(rate_limit_per_min=50, allowed_domains="HR")
+    h = {"Authorization": f"Bearer {out['key']}"}
+    assert out["allowed_domains"] == "HR" and out["enabled"] is True
+
+    # Question + end-user context land in the usage log
+    r = client.post(
+        "/api/v1/ask",
+        json={"question": "What is the leave policy?", "user": "dana@weka.io"},
+        headers=h,
+    )
+    assert r.status_code == 200
+    usage = client.get(f"/api/admin/keys/{out['id']}/usage").json()
+    row = usage[0]
+    assert row["question"] == "What is the leave policy?"
+    assert row["on_behalf_of"] == "dana@weka.io"
+    assert row["status_code"] == 200
+
+    # Disable is reversible and audited; disabled key is rejected
+    r = client.post(f"/api/admin/keys/{out['id']}/enabled", json={"enabled": False})
+    assert r.json()["enabled"] is False
+    _rate.clear()
+    assert client.get("/api/v1/health", headers=h).status_code == 401
+    r = client.post(f"/api/admin/keys/{out['id']}/enabled", json={"enabled": True})
+    assert r.json()["enabled"] is True
+    _rate.clear()
+    assert client.get("/api/v1/health", headers=h).status_code == 200
+    actions = _audit_actions()
+    assert "apikey.disable" in actions and "apikey.enable" in actions
+
+    # Revoked keys cannot be re-enabled
+    client.post(f"/api/admin/keys/{out['id']}/revoke")
+    assert (
+        client.post(f"/api/admin/keys/{out['id']}/enabled", json={"enabled": True}).status_code
+        == 400
+    )
+
+
+def test_domain_scoping_passed_to_prompt(monkeypatch):
+    seen = {}
+
+    def fake_build(domain=""):
+        seen["domain"] = domain
+        return "SYSTEM"
+
+    monkeypatch.setattr(public_module, "get_provider", _fake_get_provider)
+    monkeypatch.setattr(public_module, "build_system_prompt", fake_build)
+    out = _make_key(allowed_domains="it")  # lowercase input normalized
+    h = {"Authorization": f"Bearer {out['key']}"}
+    assert out["allowed_domains"] == "IT"
+    assert client.post("/api/v1/ask", json={"question": "vpn?"}, headers=h).status_code == 200
+    assert seen["domain"] == "IT"
+
+    # Unscoped key gets the full KB
+    out2 = _make_key()
+    h2 = {"Authorization": f"Bearer {out2['key']}"}
+    client.post("/api/v1/ask", json={"question": "hi"}, headers=h2)
+    assert seen["domain"] == ""
+
+
+def test_mcp_usage_logging_and_domain(monkeypatch):
+    monkeypatch.setattr(mcp_module, "get_provider", _fake_get_provider)
+    tok = _make_key(kind="mcp", expires_days=7, allowed_domains="HR")
+    h = {"Authorization": f"Bearer {tok['key']}"}
+    call = client.post("/mcp", headers=h, json={
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "ask_weka",
+                   "arguments": {"question": "Parental leave?", "user": "noa@weka.io"}},
+    }).json()["result"]
+    assert call["isError"] is False
+    usage = client.get(f"/api/admin/keys/{tok['id']}/usage").json()
+    assert usage[0]["question"] == "Parental leave?"
+    assert usage[0]["on_behalf_of"] == "noa@weka.io"
+
+
 def test_key_creation_validation():
+    assert client.post(
+        "/api/admin/keys", json={"name": "x", "allowed_domains": "finance"}
+    ).status_code == 400
     assert client.post("/api/admin/keys", json={"name": " "}).status_code == 400
     assert client.post("/api/admin/keys", json={"name": "x", "kind": "weird"}).status_code == 400
     assert client.post("/api/admin/keys", json={"name": "x", "scope": "write"}).status_code == 400

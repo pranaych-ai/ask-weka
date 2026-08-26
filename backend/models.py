@@ -187,6 +187,10 @@ class ApiKey(Base):
     name: Mapped[str] = mapped_column(String(200))
     owner: Mapped[str] = mapped_column(String(120), default="")
     scope: Mapped[str] = mapped_column(String(30), default="ask")  # ask-only for now
+    # "" = full KB; otherwise comma-separated domain allowlist, e.g. "HR" or "HR,IT".
+    allowed_domains: Mapped[str] = mapped_column(String(60), default="")
+    # Reversible per-app off-switch (revoked is permanent).
+    enabled: Mapped[bool] = mapped_column(default=True)
     key_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     prefix: Mapped[str] = mapped_column(String(12), default="")  # display hint only
     rate_limit_per_min: Mapped[int] = mapped_column(default=30)
@@ -199,7 +203,8 @@ class ApiKey(Base):
 
 
 class ApiKeyUsage(Base):
-    """Per-request usage log for API keys (IDs and status only, no content)."""
+    """Per-request usage log for API keys: which app asked what, on whose
+    behalf. Question text is truncated; no secrets, no answer content."""
 
     __tablename__ = "api_key_usage"
 
@@ -208,6 +213,8 @@ class ApiKeyUsage(Base):
         String(36), ForeignKey("api_keys.id", ondelete="CASCADE"), index=True
     )
     endpoint: Mapped[str] = mapped_column(String(120), default="")
+    question: Mapped[str] = mapped_column(String(500), default="")
+    on_behalf_of: Mapped[str] = mapped_column(String(120), default="")
     status_code: Mapped[int] = mapped_column(default=200)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_now, index=True

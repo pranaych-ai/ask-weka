@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 
 async function api(path, opts) {
   const res = await fetch(path, opts);
@@ -29,56 +29,112 @@ export function NewSecret({ secret, onDismiss, label }) {
   );
 }
 
+function UsageLog({ keyId }) {
+  const [rows, setRows] = useState(null);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    api(`/api/admin/keys/${keyId}/usage`).then(setRows).catch((e) => setError(String(e.message || e)));
+  }, [keyId]);
+
+  if (error) return <div className="admin-error">{error}</div>;
+  if (!rows) return <div className="admin-detail">Loading…</div>;
+  if (rows.length === 0) return <div className="admin-detail">No requests yet.</div>;
+  return (
+    <table className="admin-table key-usage-table">
+      <thead>
+        <tr><th>When</th><th>Endpoint</th><th>Question</th><th>On behalf of</th><th>Status</th></tr>
+      </thead>
+      <tbody>
+        {rows.map((u) => (
+          <tr key={u.id}>
+            <td>{u.created_at.replace("T", " ").slice(0, 16)}</td>
+            <td><code>{u.endpoint}</code></td>
+            <td>{u.question || <span className="admin-detail">—</span>}</td>
+            <td>{u.on_behalf_of || <span className="admin-detail">—</span>}</td>
+            <td>{u.status_code}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
 export function KeyTable({ kind, reloadKey, onChanged }) {
   const [keys, setKeys] = useState([]);
   const [error, setError] = useState("");
+  const [openLog, setOpenLog] = useState("");
 
   useEffect(() => {
     api(`/api/admin/keys?kind=${kind}`).then(setKeys).catch((e) => setError(String(e.message || e)));
   }, [kind, reloadKey]);
 
   const revoke = async (k) => {
-    if (!confirm(`Revoke "${k.name}"? Clients using it stop working immediately.`)) return;
+    if (!confirm(`Revoke "${k.name}"? This is permanent — clients using it stop working immediately.`)) return;
     await api(`/api/admin/keys/${k.id}/revoke`, { method: "POST" });
     onChanged();
   };
 
+  const setEnabled = async (k, enabled) => {
+    await api(`/api/admin/keys/${k.id}/enabled`, json("POST", { enabled }));
+    onChanged();
+  };
+
+  const cols = kind === "mcp" ? 12 : 11;
   return (
     <>
       {error && <div className="admin-error">{error}</div>}
       <table className="admin-table">
         <thead>
           <tr>
-            <th>Name</th><th>Owner</th><th>Key</th><th>Rate/min</th>
+            <th>Name</th><th>Owner</th><th>Key</th><th>Scope</th><th>Rate/min</th>
             {kind === "mcp" && <th>Expires</th>}
-            <th>Uses (24h)</th><th>Total</th><th>Last used</th><th>Status</th><th></th>
+            <th>Uses (24h)</th><th>Total</th><th>Last used</th><th>Status</th><th></th><th></th>
           </tr>
         </thead>
         <tbody>
           {keys.map((k) => (
-            <tr key={k.id} className={k.revoked ? "qa-inactive" : ""}>
-              <td>{k.name}</td>
-              <td>{k.owner || k.created_by}</td>
-              <td><code>{k.prefix}…</code></td>
-              <td>{k.rate_limit_per_min}</td>
-              {kind === "mcp" && <td>{k.expires_at ? k.expires_at.slice(0, 10) : "—"}</td>}
-              <td>{k.usage_24h}</td>
-              <td>{k.usage_count}</td>
-              <td>{k.last_used_at ? k.last_used_at.replace("T", " ").slice(0, 16) : "never"}</td>
-              <td>
-                <span className={`qa-status ${k.revoked ? "open" : "resolved"}`}>
-                  {k.revoked ? "revoked" : "active"}
-                </span>
-              </td>
-              <td>
-                {!k.revoked && (
-                  <button className="qa-mini" onClick={() => revoke(k)}>Revoke</button>
-                )}
-              </td>
-            </tr>
+            <Fragment key={k.id}>
+              <tr className={k.revoked || !k.enabled ? "qa-inactive" : ""}>
+                <td>{k.name}</td>
+                <td>{k.owner || k.created_by}</td>
+                <td><code>{k.prefix}…</code></td>
+                <td>{k.allowed_domains || "Full KB"}</td>
+                <td>{k.rate_limit_per_min}</td>
+                {kind === "mcp" && <td>{k.expires_at ? k.expires_at.slice(0, 10) : "—"}</td>}
+                <td>{k.usage_24h}</td>
+                <td>{k.usage_count}</td>
+                <td>{k.last_used_at ? k.last_used_at.replace("T", " ").slice(0, 16) : "never"}</td>
+                <td>
+                  <span className={`qa-status ${k.revoked || !k.enabled ? "open" : "resolved"}`}>
+                    {k.revoked ? "revoked" : k.enabled ? "active" : "disabled"}
+                  </span>
+                </td>
+                <td>
+                  <button className="qa-mini" onClick={() => setOpenLog(openLog === k.id ? "" : k.id)}>
+                    {openLog === k.id ? "Hide log" : "Log"}
+                  </button>
+                </td>
+                <td>
+                  {!k.revoked && (
+                    <>
+                      <button className="qa-mini" onClick={() => setEnabled(k, !k.enabled)}>
+                        {k.enabled ? "Disable" : "Enable"}
+                      </button>{" "}
+                      <button className="qa-mini" onClick={() => revoke(k)}>Revoke</button>
+                    </>
+                  )}
+                </td>
+              </tr>
+              {openLog === k.id && (
+                <tr>
+                  <td colSpan={cols}><UsageLog keyId={k.id} /></td>
+                </tr>
+              )}
+            </Fragment>
           ))}
           {keys.length === 0 && (
-            <tr><td colSpan={kind === "mcp" ? 10 : 9} className="admin-empty">None yet.</td></tr>
+            <tr><td colSpan={cols} className="admin-empty">None yet.</td></tr>
           )}
         </tbody>
       </table>
@@ -87,7 +143,7 @@ export function KeyTable({ kind, reloadKey, onChanged }) {
 }
 
 export default function ApiKeys() {
-  const [form, setForm] = useState({ name: "", owner: "", rate_limit_per_min: 30 });
+  const [form, setForm] = useState({ name: "", owner: "", rate_limit_per_min: 30, allowed_domains: "" });
   const [secret, setSecret] = useState("");
   const [error, setError] = useState("");
   const [reloadKey, setReloadKey] = useState(0);
@@ -97,7 +153,7 @@ export default function ApiKeys() {
     try {
       const out = await api("/api/admin/keys", json("POST", { ...form, kind: "api" }));
       setSecret(out.key);
-      setForm({ name: "", owner: "", rate_limit_per_min: 30 });
+      setForm({ name: "", owner: "", rate_limit_per_min: 30, allowed_domains: "" });
       setReloadKey((k) => k + 1);
     } catch (e) {
       setError(String(e.message || e));
@@ -122,6 +178,12 @@ export default function ApiKeys() {
           <input type="number" min="1" max="600" title="Requests per minute" style={{ width: 90 }}
             value={form.rate_limit_per_min}
             onChange={(e) => setForm({ ...form, rate_limit_per_min: Number(e.target.value) })} />
+          <select title="Knowledge base scope" value={form.allowed_domains}
+            onChange={(e) => setForm({ ...form, allowed_domains: e.target.value })}>
+            <option value="">Full KB</option>
+            <option value="HR">HR only</option>
+            <option value="IT">IT only</option>
+          </select>
           <button className="kb-save" disabled={!form.name.trim()} onClick={create}>
             Create key
           </button>

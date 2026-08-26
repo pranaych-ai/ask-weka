@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 
 from .analysis import extract_sources
-from .api_keys import require_mcp_token
+from .api_keys import key_domain, record_usage_detail, require_mcp_token
 from .models import ApiKey
 from .prompts import build_system_prompt
 from .providers import get_provider
@@ -32,7 +32,14 @@ ASK_TOOL = {
     "inputSchema": {
         "type": "object",
         "properties": {
-            "question": {"type": "string", "description": "The question to ask"}
+            "question": {"type": "string", "description": "The question to ask"},
+            "user": {
+                "type": "string",
+                "description": (
+                    "Optional: email/username of the end user this question is "
+                    "asked on behalf of (recorded in the request log)"
+                ),
+            },
         },
         "required": ["question"],
     },
@@ -50,11 +57,11 @@ def _rpc_error(id_, code: int, message: str, status: int = 200) -> JSONResponse:
     )
 
 
-async def _answer(question: str) -> dict:
+async def _answer(question: str, domain: str = "") -> dict:
     provider = get_provider()
     chunks: list[str] = []
     async for chunk in provider.stream_chat(
-        build_system_prompt(), [{"role": "user", "content": question}]
+        build_system_prompt(domain), [{"role": "user", "content": question}]
     ):
         chunks.append(chunk)
     answer = "".join(chunks)
@@ -94,19 +101,28 @@ async def mcp_endpoint(request: Request, token: ApiKey = Depends(require_mcp_tok
     if method == "tools/call":
         if params.get("name") != "ask_weka":
             return _rpc_error(id_, -32602, f"Unknown tool: {params.get('name')}")
-        question = ((params.get("arguments") or {}).get("question") or "").strip()
+        args = params.get("arguments") or {}
+        question = (args.get("question") or "").strip()
+        on_behalf_of = (args.get("user") or "").strip()
+        usage_id = getattr(token, "usage_id", None)
         if not question:
+            record_usage_detail(usage_id, question, on_behalf_of, 400)
             return _rpc_error(id_, -32602, "question is required")
         if len(question) > 4000:
+            record_usage_detail(usage_id, question, on_behalf_of, 400)
             return _rpc_error(id_, -32602, "question too long (max 4000 chars)")
         try:
-            return _rpc_result(id_, await _answer(question))
+            result = await _answer(question, key_domain(token))
+            record_usage_detail(usage_id, question, on_behalf_of, 200)
+            return _rpc_result(id_, result)
         except (RuntimeError, ValueError) as e:
+            record_usage_detail(usage_id, question, on_behalf_of, 503)
             return _rpc_result(id_, {
                 "content": [{"type": "text", "text": f"Model unavailable: {e}"}],
                 "isError": True,
             })
         except Exception as e:
+            record_usage_detail(usage_id, question, on_behalf_of, 502)
             return _rpc_result(id_, {
                 "content": [{"type": "text", "text": f"Error answering: {e}"}],
                 "isError": True,

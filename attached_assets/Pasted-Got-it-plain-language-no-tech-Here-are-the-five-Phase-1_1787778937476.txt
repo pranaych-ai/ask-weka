@@ -1,0 +1,33 @@
+Got it — plain language, no tech. Here are the five Phase 1 features, each written as a PM would hand it to an engineer, with the three requirements that matter most:
+
+**1. Slack assistant (1:1 chat)**
+As a WEKA employee, I can message Ask WEKA directly in Slack and get an answer to any IT or HR question.
+- Every answer must come from our official knowledge base and include a link to the source — never made up.
+- If the assistant doesn't know, it must say so and tell me exactly who or where to go instead.
+- Only WEKA employees with access should be able to use it, and answers should arrive within about 10 seconds.
+
+**2. Feedback on every answer**
+As a user, I can rate every answer with a thumbs up or down, and optionally say what was wrong.
+- The buttons appear on every single answer, and rating takes one tap.
+- All feedback lands in one place the team already reviews, so we can spot bad answers and fix the knowledge base.
+- Feedback must stay anonymous — no names attached to what people asked.
+
+**3. Answers that know who's asking**
+As an employee, I get answers that apply to *me* — my country, my role — without having to say so.
+- An employee in Israel and one in the US asking the same HR question each get their own correct answer.
+- If the system can't tell who I am, it gives the general answer and says so — it never guesses.
+- The assistant never reveals one employee's information to another.
+
+**4. Solve it first, ticket if not**
+As an employee with an IT problem, the assistant tries to fix it with me before a ticket ever gets created.
+- If the fix works, no ticket. If not, the assistant writes the ticket for me — including everything we already tried.
+- I always review and approve the ticket before it's submitted; nothing is filed without my okay.
+- We measure how many issues were solved without a ticket — that's the success number for this feature.
+
+**5. Ask WEKA as a service for other tools**
+Other internal WEKA apps can ask Ask WEKA questions and get the same trusted, sourced answers.
+- Only approved apps get access, and each one can be switched off individually.
+- An app can never get more information than the actual person using it is allowed to see.
+- Every request is logged so we always know who asked what through which app.
+
+That's the whole Phase 1 in plain terms. Want this dropped into the Notion plan as the non-technical companion to the spec?

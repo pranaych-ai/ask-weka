@@ -24,8 +24,10 @@ from .models import ApiKey, ApiKeyUsage
 router = APIRouter(prefix="/api/admin/keys", dependencies=[Depends(admin_audited)])
 
 KINDS = ("api", "mcp")
+DOMAINS = ("HR", "IT")
 RATE_LIMIT_MAX = 600
 MCP_TOKEN_MAX_DAYS = 90
+USAGE_QUESTION_MAX = 500
 
 
 def _hash(key: str) -> str:
@@ -70,6 +72,8 @@ def authenticate_key(request: Request, kind: str) -> ApiKey:
         key = db.query(ApiKey).filter(ApiKey.key_hash == _hash(token)).first()
         if not key or key.kind != kind or key.revoked:
             raise HTTPException(401, "Invalid or revoked credential")
+        if not key.enabled:
+            raise HTTPException(401, "Credential is disabled")
         if key.expires_at is not None:
             exp = key.expires_at
             if exp.tzinfo is None:
@@ -79,13 +83,49 @@ def authenticate_key(request: Request, kind: str) -> ApiKey:
         _check_rate(key)
         key.usage_count += 1
         key.last_used_at = _now()
-        db.add(ApiKeyUsage(key_id=key.id, endpoint=request.url.path, status_code=200))
+        usage = ApiKeyUsage(key_id=key.id, endpoint=request.url.path, status_code=200)
+        db.add(usage)
         db.commit()
         db.refresh(key)
         db.expunge(key)
+        key.usage_id = usage.id  # transient: lets the handler attach detail
         return key
     finally:
         db.close()
+
+
+def record_usage_detail(
+    usage_id: Optional[str],
+    question: str = "",
+    on_behalf_of: str = "",
+    status_code: int = 200,
+) -> None:
+    """Attach the asked question / end-user context to the usage row created
+    during authentication, so every service request shows who asked what
+    through which app."""
+    if not usage_id:
+        return
+    db = SessionLocal()
+    try:
+        usage = db.get(ApiKeyUsage, usage_id)
+        if usage:
+            usage.question = question[:USAGE_QUESTION_MAX]
+            usage.on_behalf_of = on_behalf_of[:120]
+            usage.status_code = status_code
+            db.commit()
+    finally:
+        db.close()
+
+
+def key_domain(key: ApiKey) -> str:
+    """The single KB domain a key is restricted to, or "" for full access.
+
+    Deduplicates defensively so a malformed allowlist like "HR,HR" can never
+    widen access beyond the single listed domain."""
+    domains = {d for d in key.allowed_domains.split(",") if d}
+    if not domains or domains == set(DOMAINS):
+        return ""
+    return sorted(domains)[0] if len(domains) == 1 else ""
 
 
 def require_api_key(request: Request) -> ApiKey:
@@ -106,6 +146,8 @@ def _key_out(k: ApiKey, usage_24h: Optional[int] = None) -> dict:
         "name": k.name,
         "owner": k.owner,
         "scope": k.scope,
+        "allowed_domains": k.allowed_domains,
+        "enabled": k.enabled,
         "prefix": k.prefix,
         "rate_limit_per_min": k.rate_limit_per_min,
         "revoked": k.revoked,
@@ -139,6 +181,7 @@ class KeyCreate(BaseModel):
     owner: str = ""
     kind: str = "api"
     scope: str = "ask"
+    allowed_domains: str = ""  # "" = full KB, or comma list of HR/IT
     rate_limit_per_min: int = 30
     expires_days: Optional[int] = None  # required for kind="mcp"
 
@@ -153,6 +196,9 @@ def key_create(
         raise HTTPException(400, f"kind must be one of {KINDS}")
     if req.scope != "ask":
         raise HTTPException(400, "Only the 'ask' scope is supported")
+    domains = sorted({d.strip().upper() for d in req.allowed_domains.split(",") if d.strip()})
+    if any(d not in DOMAINS for d in domains):
+        raise HTTPException(400, f"allowed_domains entries must be one of {DOMAINS}")
     if not (1 <= req.rate_limit_per_min <= RATE_LIMIT_MAX):
         raise HTTPException(400, f"rate_limit_per_min must be 1..{RATE_LIMIT_MAX}")
     expires_at = None
@@ -170,6 +216,7 @@ def key_create(
         name=req.name.strip(),
         owner=req.owner.strip(),
         scope=req.scope,
+        allowed_domains=",".join(domains),
         key_hash=_hash(plaintext),
         prefix=plaintext[:10],
         rate_limit_per_min=req.rate_limit_per_min,
@@ -196,3 +243,53 @@ def key_revoke(
     log_event(db, user["username"], "apikey.revoke", f"id={key.id} kind={key.kind}")
     db.commit()
     return _key_out(key)
+
+
+class KeyEnabledUpdate(BaseModel):
+    enabled: bool
+
+
+@router.post("/{key_id}/enabled")
+def key_set_enabled(
+    key_id: str,
+    req: KeyEnabledUpdate,
+    db: Session = Depends(get_db),
+    user: dict = Depends(admin_audited),
+):
+    """Reversible per-app off-switch (unlike revoke, which is permanent)."""
+    key = db.get(ApiKey, key_id)
+    if not key:
+        raise HTTPException(404, "Key not found")
+    if key.revoked:
+        raise HTTPException(400, "Key is revoked; issue a new one instead")
+    key.enabled = req.enabled
+    action = "apikey.enable" if req.enabled else "apikey.disable"
+    log_event(db, user["username"], action, f"id={key.id} kind={key.kind}")
+    db.commit()
+    return _key_out(key)
+
+
+@router.get("/{key_id}/usage")
+def key_usage(key_id: str, limit: int = 50, db: Session = Depends(get_db)):
+    """Recent requests for one key: who asked what through this app."""
+    if not db.get(ApiKey, key_id):
+        raise HTTPException(404, "Key not found")
+    limit = max(1, min(limit, 200))
+    rows = (
+        db.query(ApiKeyUsage)
+        .filter(ApiKeyUsage.key_id == key_id)
+        .order_by(ApiKeyUsage.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+    return [
+        {
+            "id": u.id,
+            "endpoint": u.endpoint,
+            "question": u.question,
+            "on_behalf_of": u.on_behalf_of,
+            "status_code": u.status_code,
+            "created_at": u.created_at.isoformat(),
+        }
+        for u in rows
+    ]
