@@ -115,6 +115,25 @@ function ResolutionBar({ conversationId, resolution, onResolved, disabled }) {
   const [error, setError] = useState("");
   const [jira, setJira] = useState(null); // {enabled, connected, email, site_url}
   const [created, setCreated] = useState(null); // ticket response after filing
+  const [askConnect, setAskConnect] = useState(false);
+
+  // Returning from the Jira SSO redirect: restore the draft the employee was
+  // about to file and reopen the review dialog exactly where they left off.
+  useEffect(() => {
+    let saved = null;
+    try {
+      saved = JSON.parse(sessionStorage.getItem("askweka_jira_draft") || "null");
+    } catch {}
+    if (saved && saved.cid === conversationId) {
+      sessionStorage.removeItem("askweka_jira_draft");
+      setDraft({ title: saved.title, body: saved.body });
+      setModal(true);
+      fetch("/api/jira/status")
+        .then((r) => (r.ok ? r.json() : null))
+        .then(setJira)
+        .catch(() => {});
+    }
+  }, [conversationId]);
 
   if (resolution === "solved")
     return <div className="resolution-note">✅ Marked as solved — no ticket needed.</div>;
@@ -177,8 +196,26 @@ function ResolutionBar({ conversationId, resolution, onResolved, disabled }) {
     }
   };
 
-  const submitTicket = async () => {
+  const connectAndFile = () => {
+    // Save the draft so it survives the SSO redirect, then start OAuth.
+    try {
+      sessionStorage.setItem(
+        "askweka_jira_draft",
+        JSON.stringify({ cid: conversationId, title: draft?.title || "", body: draft?.body || "" })
+      );
+    } catch {}
+    window.location.href = "/api/jira/connect";
+  };
+
+  const submitTicket = async (skipJira = false) => {
     if (busy || !draft?.title.trim()) return;
+    // Only ask for a Jira connection at the moment a ticket is actually
+    // being filed — and never block filing locally instead.
+    if (!skipJira && jira?.enabled && !jira.connected && !askConnect) {
+      setAskConnect(true);
+      return;
+    }
+    setAskConnect(false);
     setBusy(true);
     setError("");
     try {
@@ -246,34 +283,44 @@ function ResolutionBar({ conversationId, resolution, onResolved, disabled }) {
                 />
               </>
             )}
-            {jira?.enabled && (
+            {jira?.enabled && jira.connected && (
               <div className="jira-row">
-                {jira.connected ? (
-                  <span className="jira-connected">
-                    ✅ Files in Jira as <b>{jira.email || "you"}</b>
-                  </span>
-                ) : (
-                  <span className="jira-disconnected">
-                    <a href="/api/jira/connect">Connect Jira</a> (sign in with your
-                    WEKA SSO) to file this as a real Jira ticket under your name —
-                    otherwise it stays in Ask WEKA only.
-                  </span>
-                )}
+                <span className="jira-connected">
+                  ✅ Will be filed in Jira as <b>{jira.email || "you"}</b>
+                </span>
+              </div>
+            )}
+            {askConnect && (
+              <div className="jira-row jira-ask">
+                <p>
+                  File this in Jira under your name? Sign in once with your WEKA
+                  SSO — your draft is kept.
+                </p>
+                <div className="fb-actions">
+                  <button className="fb-cancel" onClick={() => submitTicket(true)}>
+                    File without Jira
+                  </button>
+                  <button className="fb-submit" onClick={connectAndFile}>
+                    Connect Jira &amp; file
+                  </button>
+                </div>
               </div>
             )}
             {error && <div className="res-error">{error}</div>}
-            <div className="fb-actions">
-              <button className="fb-cancel" disabled={busy} onClick={() => setModal(false)}>
-                Cancel
-              </button>
-              <button
-                className="fb-submit"
-                disabled={loading || busy || !draft?.title.trim()}
-                onClick={submitTicket}
-              >
-                {busy ? "Filing…" : "Approve & create ticket"}
-              </button>
-            </div>
+            {!askConnect && (
+              <div className="fb-actions">
+                <button className="fb-cancel" disabled={busy} onClick={() => setModal(false)}>
+                  Cancel
+                </button>
+                <button
+                  className="fb-submit"
+                  disabled={loading || busy || !draft?.title.trim()}
+                  onClick={() => submitTicket()}
+                >
+                  {busy ? "Filing…" : "Approve & create ticket"}
+                </button>
+              </div>
+            )}
           </div>
         </div>
       )}

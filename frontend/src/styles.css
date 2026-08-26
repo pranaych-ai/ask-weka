@@ -779,3 +779,5 @@ body {
 .jira-map-row { display: flex; align-items: center; gap: 10px; margin: 6px 0; }
 .jira-map-row span { width: 90px; font-weight: 600; }
 .jira-map-row input { flex: 1; padding: 4px 8px; }
+.jira-ask { border: 1px solid #cfd8dc; border-radius: 8px; padding: 10px 14px; background: #f7f9fb; }
+.jira-ask p { margin: 0 0 8px; }
