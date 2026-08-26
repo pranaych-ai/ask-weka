@@ -217,6 +217,9 @@ class ApiKeyUsage(Base):
     endpoint: Mapped[str] = mapped_column(String(120), default="")
     question: Mapped[str] = mapped_column(String(500), default="")
     on_behalf_of: Mapped[str] = mapped_column(String(120), default="")
+    # True only when the end-user identity was proven via a verified
+    # Okta-issued token; a plain caller-supplied "user" string stays False.
+    user_verified: Mapped[bool] = mapped_column(default=False)
     status_code: Mapped[int] = mapped_column(default=200)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_now, index=True

@@ -252,3 +252,121 @@ def test_key_creation_validation():
     assert client.post(
         "/api/admin/keys", json={"name": "x", "kind": "mcp", "expires_days": 365}
     ).status_code == 400
+
+
+def test_unverified_user_claim_flagged(monkeypatch):
+    """A plain 'user' string is recorded but flagged unverified."""
+    monkeypatch.setattr(public_module, "get_provider", _fake_get_provider)
+    out = _make_key(rate_limit_per_min=50)
+    h = {"Authorization": f"Bearer {out['key']}"}
+    r = client.post("/api/v1/ask", json={"question": "hi?", "user": "eve@weka.io"}, headers=h)
+    assert r.status_code == 200
+    usage = client.get(f"/api/admin/keys/{out['id']}/usage").json()
+    assert usage[0]["on_behalf_of"] == "eve@weka.io"
+    assert usage[0]["user_verified"] is False
+
+
+def test_user_token_unverifiable_is_rejected(monkeypatch):
+    """A user_token that cannot be verified rejects the request (401),
+    never silently downgrading to an unverified claim."""
+    monkeypatch.setattr(public_module, "get_provider", _fake_get_provider)
+    out = _make_key(rate_limit_per_min=50)
+    h = {"Authorization": f"Bearer {out['key']}"}
+    # Okta is not configured in tests -> verification is impossible -> reject.
+    r = client.post(
+        "/api/v1/ask",
+        json={"question": "hi?", "user": "eve@weka.io", "user_token": "fake.jwt.token"},
+        headers=h,
+    )
+    assert r.status_code == 401
+    usage = client.get(f"/api/admin/keys/{out['id']}/usage").json()
+    assert usage[0]["status_code"] == 401
+    assert usage[0]["user_verified"] is False
+
+
+def test_user_token_verified_identity_recorded(monkeypatch):
+    """A valid Okta token yields a verified identity that overrides the
+    caller-supplied 'user' string."""
+    monkeypatch.setattr(public_module, "get_provider", _fake_get_provider)
+    monkeypatch.setattr(public_module, "verify_user_token", lambda t: "dana@weka.io")
+    out = _make_key(rate_limit_per_min=50)
+    h = {"Authorization": f"Bearer {out['key']}"}
+    r = client.post(
+        "/api/v1/ask",
+        json={"question": "leave policy?", "user": "spoof@weka.io", "user_token": "good.jwt"},
+        headers=h,
+    )
+    assert r.status_code == 200
+    usage = client.get(f"/api/admin/keys/{out['id']}/usage").json()
+    assert usage[0]["on_behalf_of"] == "dana@weka.io"
+    assert usage[0]["user_verified"] is True
+
+
+def test_mcp_user_token_verified_and_rejected(monkeypatch):
+    monkeypatch.setattr(mcp_module, "get_provider", _fake_get_provider)
+    tok = _make_key(kind="mcp", expires_days=7)
+    h = {"Authorization": f"Bearer {tok['key']}"}
+    # Unverifiable token -> HTTP 401 + JSON-RPC error, request rejected
+    bad_resp = client.post("/mcp", headers=h, json={
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "ask_weka",
+                   "arguments": {"question": "hi?", "user_token": "fake.jwt"}},
+    })
+    assert bad_resp.status_code == 401
+    assert "error" in bad_resp.json()
+    # Verified token -> verified identity recorded
+    monkeypatch.setattr(mcp_module, "verify_user_token", lambda t: "noa@weka.io")
+    ok = client.post("/mcp", headers=h, json={
+        "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+        "params": {"name": "ask_weka",
+                   "arguments": {"question": "hi?", "user": "spoof@x", "user_token": "good.jwt"}},
+    }).json()
+    assert ok["result"]["isError"] is False
+    usage = client.get(f"/api/admin/keys/{tok['id']}/usage").json()
+    assert usage[0]["on_behalf_of"] == "noa@weka.io"
+    assert usage[0]["user_verified"] is True
+
+
+def _signed_token(claims):
+    from authlib.jose import JsonWebKey, jwt as _jwt
+    key = JsonWebKey.generate_key("RSA", 2048, is_private=True)
+    tok = _jwt.encode({"alg": "RS256", "kid": "test"}, claims, key).decode()
+    return tok, JsonWebKey.import_key_set({"keys": [{**key.as_dict(), "kid": "test"}]})
+
+
+def test_verify_user_token_audience_enforced(monkeypatch):
+    """A token signed by the right issuer but minted for a different app
+    (wrong aud) must not be accepted as a verified identity."""
+    import time as _time
+
+    import backend.identity as identity
+
+    issuer = "https://weka.okta.com/oauth2/default"
+    monkeypatch.setattr(identity, "AUTH_ENABLED", True)
+    monkeypatch.setattr(identity, "OKTA_ISSUER", issuer)
+    monkeypatch.setattr(identity, "_allowed_audiences", lambda: {"api://default"})
+    now = int(_time.time())
+    base = {"iss": issuer, "sub": "u1", "email": "dana@weka.io",
+            "iat": now, "exp": now + 300}
+
+    good, jwks = _signed_token({**base, "aud": "api://default"})
+    monkeypatch.setattr(identity, "_jwks", lambda: jwks)
+    assert identity.verify_user_token(good) == "dana@weka.io"
+
+    wrong_aud, jwks2 = _signed_token({**base, "aud": "some-other-app"})
+    monkeypatch.setattr(identity, "_jwks", lambda: jwks2)
+    try:
+        identity.verify_user_token(wrong_aud)
+        assert False, "wrong-audience token must be rejected"
+    except identity.IdentityError as e:
+        assert "audience" in str(e)
+
+    wrong_iss, jwks3 = _signed_token(
+        {**base, "iss": "https://evil.example.com", "aud": "api://default"}
+    )
+    monkeypatch.setattr(identity, "_jwks", lambda: jwks3)
+    try:
+        identity.verify_user_token(wrong_iss)
+        assert False, "wrong-issuer token must be rejected"
+    except identity.IdentityError as e:
+        assert "issuer" in str(e)

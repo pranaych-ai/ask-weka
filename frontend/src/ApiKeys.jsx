@@ -51,7 +51,23 @@ function UsageLog({ keyId }) {
             <td>{u.created_at.replace("T", " ").slice(0, 16)}</td>
             <td><code>{u.endpoint}</code></td>
             <td>{u.question || <span className="admin-detail">—</span>}</td>
-            <td>{u.on_behalf_of || <span className="admin-detail">—</span>}</td>
+            <td>
+              {u.on_behalf_of ? (
+                <>
+                  {u.on_behalf_of}{" "}
+                  <span
+                    className={`qa-status ${u.user_verified ? "resolved" : "open"}`}
+                    title={u.user_verified
+                      ? "Identity proven via a verified Okta token forwarded by the app"
+                      : "Caller-supplied claim — not verified against Okta"}
+                  >
+                    {u.user_verified ? "verified" : "unverified"}
+                  </span>
+                </>
+              ) : (
+                <span className="admin-detail">—</span>
+              )}
+            </td>
             <td>{u.status_code}</td>
           </tr>
         ))}

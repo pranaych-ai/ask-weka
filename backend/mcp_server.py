@@ -14,6 +14,7 @@ from fastapi.responses import JSONResponse, Response
 
 from .analysis import extract_sources
 from .api_keys import key_domain, record_usage_detail, require_mcp_token
+from .identity import IdentityError, verify_user_token
 from .models import ApiKey
 from .prompts import build_system_prompt
 from .providers import get_provider
@@ -37,7 +38,16 @@ ASK_TOOL = {
                 "type": "string",
                 "description": (
                     "Optional: email/username of the end user this question is "
-                    "asked on behalf of (recorded in the request log)"
+                    "asked on behalf of (recorded in the request log as an "
+                    "UNVERIFIED claim)"
+                ),
+            },
+            "user_token": {
+                "type": "string",
+                "description": (
+                    "Optional: Okta-issued JWT for the end user, forwarded by "
+                    "the calling app. Verified server-side; the verified "
+                    "identity is recorded. Invalid tokens reject the request."
                 ),
             },
         },
@@ -105,24 +115,35 @@ async def mcp_endpoint(request: Request, token: ApiKey = Depends(require_mcp_tok
         question = (args.get("question") or "").strip()
         on_behalf_of = (args.get("user") or "").strip()
         usage_id = getattr(token, "usage_id", None)
+        user_verified = False
+        user_token = (args.get("user_token") or "").strip()
+        if user_token:
+            try:
+                on_behalf_of = verify_user_token(user_token)
+                user_verified = True
+            except IdentityError as e:
+                # Spoofed/unverifiable identity claims are rejected outright,
+                # with HTTP 401 so callers see an authentication failure.
+                record_usage_detail(usage_id, question, on_behalf_of, 401)
+                return _rpc_error(id_, -32001, str(e), status=401)
         if not question:
-            record_usage_detail(usage_id, question, on_behalf_of, 400)
+            record_usage_detail(usage_id, question, on_behalf_of, 400, user_verified)
             return _rpc_error(id_, -32602, "question is required")
         if len(question) > 4000:
-            record_usage_detail(usage_id, question, on_behalf_of, 400)
+            record_usage_detail(usage_id, question, on_behalf_of, 400, user_verified)
             return _rpc_error(id_, -32602, "question too long (max 4000 chars)")
         try:
             result = await _answer(question, key_domain(token))
-            record_usage_detail(usage_id, question, on_behalf_of, 200)
+            record_usage_detail(usage_id, question, on_behalf_of, 200, user_verified)
             return _rpc_result(id_, result)
         except (RuntimeError, ValueError) as e:
-            record_usage_detail(usage_id, question, on_behalf_of, 503)
+            record_usage_detail(usage_id, question, on_behalf_of, 503, user_verified)
             return _rpc_result(id_, {
                 "content": [{"type": "text", "text": f"Model unavailable: {e}"}],
                 "isError": True,
             })
         except Exception as e:
-            record_usage_detail(usage_id, question, on_behalf_of, 502)
+            record_usage_detail(usage_id, question, on_behalf_of, 502, user_verified)
             return _rpc_result(id_, {
                 "content": [{"type": "text", "text": f"Error answering: {e}"}],
                 "isError": True,

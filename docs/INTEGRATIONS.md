@@ -18,6 +18,21 @@ Returns `{"ok": true, "key": "<key name>"}` — use to verify a key.
 ```json
 { "question": "How do I request a new laptop?" }
 ```
+Optional end-user identity fields:
+- `user` (string, email/username): recorded in the admin usage log but
+  flagged **unverified** — it is caller-controlled and never trusted for
+  access decisions.
+- `user_token` (Okta-issued JWT for the end user, forwarded by the app):
+  verified server-side (signature via Okta JWKS, expiry, issuer). The
+  verified identity is recorded (overriding `user`) and flagged **verified**.
+  An invalid or unverifiable token rejects the request with `401` — it is
+  never downgraded to an unverified claim. When per-user KB permissions
+  land, answers will be scoped to this verified identity.
+
+  The token's `aud` claim must match this service: set
+  `OKTA_USER_TOKEN_AUDIENCE` (comma-separated) to the accepted audience(s);
+  by default the app's own Okta client ID and `api://default` are accepted.
+  Tokens minted by the same Okta org for other apps are rejected.
 Response:
 ```json
 { "answer": "…markdown answer…", "sources": ["IT Service Portal — Hardware", "…"] }
@@ -36,8 +51,10 @@ Per WEKA policy, AI clients access internal data through MCP, never directly.
   JSON-RPC 2.0 over POST)
 - Auth: expiring bearer token issued from the admin MCP page
   (`Authorization: Bearer <token>`, max lifetime 90 days, revocable)
-- Tools exposed: `ask_weka` — `{ question: string }` in, answer text with
-  cited sources out. Read-only; no write-capable tools.
+- Tools exposed: `ask_weka` — `{ question: string, user?: string,
+  user_token?: string }` in, answer text with cited sources out. Read-only;
+  no write-capable tools. `user` / `user_token` behave exactly as on
+  `POST /api/v1/ask` above (unverified claim vs. verified Okta identity).
 
 ### Claude Desktop / Claude Code example
 ```json

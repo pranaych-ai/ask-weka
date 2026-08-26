@@ -99,6 +99,7 @@ def record_usage_detail(
     question: str = "",
     on_behalf_of: str = "",
     status_code: int = 200,
+    user_verified: bool = False,
 ) -> None:
     """Attach the asked question / end-user context to the usage row created
     during authentication, so every service request shows who asked what
@@ -111,6 +112,7 @@ def record_usage_detail(
         if usage:
             usage.question = question[:USAGE_QUESTION_MAX]
             usage.on_behalf_of = on_behalf_of[:120]
+            usage.user_verified = user_verified
             usage.status_code = status_code
             db.commit()
     finally:
@@ -288,6 +290,7 @@ def key_usage(key_id: str, limit: int = 50, db: Session = Depends(get_db)):
             "endpoint": u.endpoint,
             "question": u.question,
             "on_behalf_of": u.on_behalf_of,
+            "user_verified": u.user_verified,
             "status_code": u.status_code,
             "created_at": u.created_at.isoformat(),
         }

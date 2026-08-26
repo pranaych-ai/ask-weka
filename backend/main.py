@@ -106,6 +106,10 @@ with engine.begin() as _conn:
             "ALTER TABLE api_key_usage ADD COLUMN IF NOT EXISTS "
             "on_behalf_of VARCHAR(120) NOT NULL DEFAULT ''"
         ))
+        _conn.execute(_text(
+            "ALTER TABLE api_key_usage ADD COLUMN IF NOT EXISTS "
+            "user_verified BOOLEAN NOT NULL DEFAULT FALSE"
+        ))
     else:
         _kcols = [r[1] for r in _conn.exec_driver_sql("PRAGMA table_info(api_keys)")]
         if _kcols and "enabled" not in _kcols:
@@ -124,6 +128,10 @@ with engine.begin() as _conn:
         if _ucols and "on_behalf_of" not in _ucols:
             _conn.exec_driver_sql(
                 "ALTER TABLE api_key_usage ADD COLUMN on_behalf_of VARCHAR(120) NOT NULL DEFAULT ''"
+            )
+        if _ucols and "user_verified" not in _ucols:
+            _conn.exec_driver_sql(
+                "ALTER TABLE api_key_usage ADD COLUMN user_verified BOOLEAN NOT NULL DEFAULT 0"
             )
 
     # golden_results.ai_verdict / ai_reasoning (LLM-as-a-judge grading)
