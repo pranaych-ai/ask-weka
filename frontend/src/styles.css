@@ -769,3 +769,13 @@ body {
 .admin-hint { color: #666; font-size: 13px; max-width: 720px; }
 .qa-status.in_progress { background: #fdf3e0; color: #8a5a13; }
 .qa-status.closed { background: #ececec; color: #555; }
+
+/* Jira connection + routing */
+.jira-row { margin: 8px 0; font-size: 0.85rem; }
+.jira-connected { color: #2e7d32; }
+.jira-disconnected a { font-weight: 600; }
+.jira-mapping { margin: 16px 0; padding: 12px 16px; border: 1px solid #ddd; border-radius: 8px; max-width: 480px; }
+.jira-mapping h3 { margin: 0 0 4px; }
+.jira-map-row { display: flex; align-items: center; gap: 10px; margin: 6px 0; }
+.jira-map-row span { width: 90px; font-weight: 600; }
+.jira-map-row input { flex: 1; padding: 4px 8px; }

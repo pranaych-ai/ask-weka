@@ -14,17 +14,41 @@ export default function Tickets() {
   const [filter, setFilter] = useState("");
   const [expanded, setExpanded] = useState(null);
   const [error, setError] = useState("");
+  const [jira, setJira] = useState(null); // {enabled, mapping}
+  const [mapDraft, setMapDraft] = useState(null);
+  const [mapMsg, setMapMsg] = useState("");
 
   const load = () => {
     const qs = filter ? `?status=${filter}` : "";
-    Promise.all([api("/api/admin/tickets/stats"), api(`/api/admin/tickets${qs}`)])
-      .then(([s, t]) => {
+    Promise.all([
+      api("/api/admin/tickets/stats"),
+      api(`/api/admin/tickets${qs}`),
+      api("/api/admin/jira/mapping").catch(() => null),
+    ])
+      .then(([s, t, j]) => {
         setStats(s);
         setTickets(t);
+        setJira(j);
+        if (j && mapDraft == null) setMapDraft(j.mapping);
       })
       .catch((e) => setError(String(e.message || e)));
   };
   useEffect(load, [filter]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const saveMapping = async () => {
+    setMapMsg("");
+    try {
+      const r = await api("/api/admin/jira/mapping", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mapping: mapDraft }),
+      });
+      setMapDraft(r.mapping);
+      setMapMsg("Saved.");
+    } catch (e) {
+      setMapMsg(String(e.message || e));
+    }
+  };
 
   const setStatus = async (id, status) => {
     try {
@@ -68,6 +92,29 @@ export default function Tickets() {
           </div>
         ))}
       </div>
+      {jira?.enabled && mapDraft && (
+        <div className="jira-mapping">
+          <h3>Jira routing</h3>
+          <p className="admin-hint">
+            Employees who connected Jira file tickets there directly (as
+            themselves). Map each team to its Jira project key; the blank row is
+            the fallback for unclassified conversations. Leave a key empty to
+            keep those tickets local.
+          </p>
+          {["IT", "HR", ""].map((d) => (
+            <label className="jira-map-row" key={d || "fallback"}>
+              <span>{d || "Fallback"}</span>
+              <input
+                value={mapDraft[d] || ""}
+                placeholder="e.g. ITSM"
+                onChange={(e) => setMapDraft({ ...mapDraft, [d]: e.target.value })}
+              />
+            </label>
+          ))}
+          <button onClick={saveMapping}>Save routing</button>
+          {mapMsg && <span className="admin-hint"> {mapMsg}</span>}
+        </div>
+      )}
       <div className="admin-filters">
         <select value={filter} onChange={(e) => setFilter(e.target.value)}>
           <option value="">All statuses</option>
@@ -78,7 +125,7 @@ export default function Tickets() {
       </div>
       <table className="admin-table">
         <thead>
-          <tr><th>Created</th><th>Employee</th><th>Domain</th><th>Title</th><th>Status</th><th>Actions</th></tr>
+          <tr><th>Created</th><th>Employee</th><th>Domain</th><th>Title</th><th>Jira</th><th>Status</th><th>Actions</th></tr>
         </thead>
         <tbody>
           {tickets.map((t) => (
@@ -92,6 +139,13 @@ export default function Tickets() {
                 <td>{t.username}</td>
                 <td>{t.domain || "—"}</td>
                 <td>{t.title}</td>
+                <td onClick={(e) => e.stopPropagation()}>
+                  {t.jira_key ? (
+                    <a href={t.jira_url} target="_blank" rel="noreferrer">{t.jira_key}</a>
+                  ) : (
+                    "—"
+                  )}
+                </td>
                 <td><span className={`qa-status ${t.status}`}>{t.status.replace("_", " ")}</span></td>
                 <td onClick={(e) => e.stopPropagation()}>
                   <select value={t.status} onChange={(e) => setStatus(t.id, e.target.value)}>
@@ -103,7 +157,7 @@ export default function Tickets() {
               </tr>
               {expanded === t.id && (
                 <tr key={`${t.id}-x`}>
-                  <td colSpan={6} className="qa-expand">
+                  <td colSpan={7} className="qa-expand">
                     <pre className="ticket-body">{t.body}</pre>
                   </td>
                 </tr>
@@ -111,7 +165,7 @@ export default function Tickets() {
             </>
           ))}
           {tickets.length === 0 && (
-            <tr><td colSpan={6} className="admin-empty">No tickets. 🎉</td></tr>
+            <tr><td colSpan={7} className="admin-empty">No tickets. 🎉</td></tr>
           )}
         </tbody>
       </table>

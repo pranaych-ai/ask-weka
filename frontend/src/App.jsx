@@ -113,11 +113,25 @@ function ResolutionBar({ conversationId, resolution, onResolved, disabled }) {
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [jira, setJira] = useState(null); // {enabled, connected, email, site_url}
+  const [created, setCreated] = useState(null); // ticket response after filing
 
   if (resolution === "solved")
     return <div className="resolution-note">✅ Marked as solved — no ticket needed.</div>;
   if (resolution === "ticket")
-    return <div className="resolution-note">🎫 Ticket created — the team will follow up.</div>;
+    return (
+      <div className="resolution-note">
+        🎫 Ticket created — the team will follow up.
+        {created?.jira_key && (
+          <>
+            {" "}
+            <a href={created.jira_url} target="_blank" rel="noreferrer">
+              {created.jira_key} in Jira
+            </a>
+          </>
+        )}
+      </div>
+    );
   if (disabled) return null;
 
   const markSolved = async () => {
@@ -141,6 +155,10 @@ function ResolutionBar({ conversationId, resolution, onResolved, disabled }) {
   const openTicket = async () => {
     setModal(true);
     setError("");
+    fetch("/api/jira/status")
+      .then((r) => (r.ok ? r.json() : null))
+      .then(setJira)
+      .catch(() => {});
     if (draft) return;
     setLoading(true);
     try {
@@ -173,11 +191,19 @@ function ResolutionBar({ conversationId, resolution, onResolved, disabled }) {
           body: draft.body,
         }),
       });
-      if (!res.ok) throw new Error(await res.text());
+      if (!res.ok) {
+        let msg = "Could not create the ticket. Please try again.";
+        try {
+          const d = await res.json();
+          if (d.detail) msg = d.detail;
+        } catch {}
+        throw new Error(msg);
+      }
+      setCreated(await res.json());
       setModal(false);
       onResolved("ticket");
     } catch (e) {
-      setError("Could not create the ticket. Please try again.");
+      setError(e.message || "Could not create the ticket. Please try again.");
     } finally {
       setBusy(false);
     }
@@ -219,6 +245,21 @@ function ResolutionBar({ conversationId, resolution, onResolved, disabled }) {
                   onChange={(e) => setDraft({ ...draft, body: e.target.value })}
                 />
               </>
+            )}
+            {jira?.enabled && (
+              <div className="jira-row">
+                {jira.connected ? (
+                  <span className="jira-connected">
+                    ✅ Files in Jira as <b>{jira.email || "you"}</b>
+                  </span>
+                ) : (
+                  <span className="jira-disconnected">
+                    <a href="/api/jira/connect">Connect Jira</a> (sign in with your
+                    WEKA SSO) to file this as a real Jira ticket under your name —
+                    otherwise it stays in Ask WEKA only.
+                  </span>
+                )}
+              </div>
             )}
             {error && <div className="res-error">{error}</div>}
             <div className="fb-actions">

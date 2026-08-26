@@ -251,9 +251,40 @@ class Ticket(Base):
     body: Mapped[str] = mapped_column(Text, default="")  # issue + what was already tried
     status: Mapped[str] = mapped_column(String(20), default="open", index=True)
     # "open" | "in_progress" | "resolved" | "closed"
+    jira_key: Mapped[str] = mapped_column(String(30), default="")  # e.g. ITSM-123
+    jira_url: Mapped[str] = mapped_column(String(300), default="")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_now, index=True
     )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_now, onupdate=_now
+    )
+
+
+class JiraAccount(Base):
+    """Per-employee Jira connection (Atlassian OAuth, Okta-backed SSO):
+    tickets are filed AS the employee, never by a shared bot account."""
+
+    __tablename__ = "jira_accounts"
+
+    username: Mapped[str] = mapped_column(String(120), primary_key=True)
+    access_token: Mapped[str] = mapped_column(Text, default="")
+    refresh_token: Mapped[str] = mapped_column(Text, default="")
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    cloud_id: Mapped[str] = mapped_column(String(60), default="")
+    site_url: Mapped[str] = mapped_column(String(200), default="")
+    account_id: Mapped[str] = mapped_column(String(120), default="")
+    email: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class AppSetting(Base):
+    """Small admin-editable key/value settings (e.g. Jira project routing)."""
+
+    __tablename__ = "app_settings"
+
+    key: Mapped[str] = mapped_column(String(60), primary_key=True)
+    value: Mapped[str] = mapped_column(Text, default="")
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_now, onupdate=_now
     )

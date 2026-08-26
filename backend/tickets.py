@@ -16,6 +16,7 @@ from .admin import admin_audited
 from .audit import log_event
 from .auth import require_user
 from .db import get_db
+from .jira_oauth import JiraAccount, create_jira_issue, project_for_domain
 from .models import Conversation, Ticket
 
 router = APIRouter(prefix="/api/tickets")
@@ -133,19 +134,23 @@ def _ticket_out(t: Ticket) -> dict:
         "title": t.title,
         "body": t.body,
         "status": t.status,
+        "jira_key": t.jira_key,
+        "jira_url": t.jira_url,
         "created_at": t.created_at.isoformat(),
         "updated_at": t.updated_at.isoformat(),
     }
 
 
 @router.post("")
-def create_ticket(
+async def create_ticket(
     req: TicketCreate,
     db: Session = Depends(get_db),
     user: dict = Depends(require_user),
 ):
     """Files the ticket — only ever called after the employee approved the
-    (editable) draft in the review dialog."""
+    (editable) draft in the review dialog. When the employee has connected
+    Jira (per-user Okta-backed SSO), the ticket is also filed in Jira AS
+    them, routed to the project mapped for the conversation's team."""
     title = req.title.strip()
     body = req.body.strip()
     if not title:
@@ -156,6 +161,21 @@ def create_ticket(
     existing = db.query(Ticket).filter(Ticket.conversation_id == conv.id).first()
     if existing:
         raise HTTPException(400, "A ticket already exists for this conversation")
+
+    acct = db.get(JiraAccount, user["username"])
+    project = ""
+    if acct:
+        project = project_for_domain(db, conv.domain)
+        if not project:
+            raise HTTPException(
+                503,
+                "No Jira project is configured for this team yet — "
+                "ask an admin to set the Jira routing, or disconnect Jira to file locally",
+            )
+
+    # Reserve the local ticket FIRST: the DB unique constraint on
+    # conversation_id makes this the lock that prevents two concurrent
+    # approvals from filing duplicate Jira issues.
     t = Ticket(
         conversation_id=conv.id,
         username=user["username"],
@@ -170,7 +190,29 @@ def create_ticket(
     except IntegrityError:
         db.rollback()
         raise HTTPException(400, "A ticket already exists for this conversation")
-    log_event(db, user["username"], "ticket.create", f"id={t.id} conversation_id={conv.id}")
+
+    if acct:
+        try:
+            t.jira_key, t.jira_url = await create_jira_issue(db, acct, project, title, body)
+        except HTTPException:
+            # No half-filed state: if Jira rejects it, nothing is stored and
+            # the employee can retry or fix the draft. (A token refresh may
+            # have committed mid-flight, so also delete any persisted row.)
+            db.rollback()
+            leftover = db.query(Ticket).filter(Ticket.conversation_id == conv.id).first()
+            if leftover and not leftover.jira_key:
+                db.delete(leftover)
+                c2 = db.get(Conversation, conv.id)
+                if c2:
+                    c2.resolution = ""
+                db.commit()
+            raise
+    log_event(
+        db,
+        user["username"],
+        "ticket.create",
+        f"id={t.id} conversation_id={conv.id}" + (f" jira={t.jira_key}" if t.jira_key else ""),
+    )
     db.commit()
     return _ticket_out(t)
 

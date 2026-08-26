@@ -160,6 +160,25 @@ with engine.begin() as _conn:
                 "ALTER TABLE conversations ADD COLUMN resolution VARCHAR(20) NOT NULL DEFAULT ''"
             )
 
+    # tickets.jira_key / jira_url — per-user Jira filing (Atlassian OAuth)
+    if _dialect == "postgresql":
+        _conn.execute(_text(
+            "ALTER TABLE tickets ADD COLUMN IF NOT EXISTS jira_key VARCHAR(30) NOT NULL DEFAULT ''"
+        ))
+        _conn.execute(_text(
+            "ALTER TABLE tickets ADD COLUMN IF NOT EXISTS jira_url VARCHAR(300) NOT NULL DEFAULT ''"
+        ))
+    else:
+        _tcols = [r[1] for r in _conn.exec_driver_sql("PRAGMA table_info(tickets)")]
+        if _tcols and "jira_key" not in _tcols:
+            _conn.exec_driver_sql(
+                "ALTER TABLE tickets ADD COLUMN jira_key VARCHAR(30) NOT NULL DEFAULT ''"
+            )
+        if _tcols and "jira_url" not in _tcols:
+            _conn.exec_driver_sql(
+                "ALTER TABLE tickets ADD COLUMN jira_url VARCHAR(300) NOT NULL DEFAULT ''"
+            )
+
     # Unique history versions per KB section (works on postgres and sqlite)
     _conn.execute(_text(
         "CREATE UNIQUE INDEX IF NOT EXISTS uq_kb_section_version "
@@ -225,6 +244,8 @@ from .knowledge import import_legacy_file_if_empty  # noqa: E402
 from .mcp_server import router as mcp_router  # noqa: E402
 from .public_api import router as public_router  # noqa: E402
 from .qa import router as qa_router  # noqa: E402
+from .jira_oauth import admin_router as jira_admin_router  # noqa: E402
+from .jira_oauth import router as jira_router  # noqa: E402
 from .slack_app import router as slack_router  # noqa: E402
 from .tickets import admin_router as tickets_admin_router  # noqa: E402
 from .tickets import router as tickets_router  # noqa: E402
@@ -242,6 +263,8 @@ app.include_router(mcp_router)
 app.include_router(tickets_router)
 app.include_router(tickets_admin_router)
 app.include_router(slack_router)
+app.include_router(jira_router)
+app.include_router(jira_admin_router)
 
 
 @app.get("/api/healthz")
