@@ -107,6 +107,139 @@ function FeedbackBar({ messageId, question }) {
   );
 }
 
+function ResolutionBar({ conversationId, resolution, onResolved, disabled }) {
+  const [modal, setModal] = useState(false);
+  const [draft, setDraft] = useState(null); // {title, body} once loaded
+  const [loading, setLoading] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  if (resolution === "solved")
+    return <div className="resolution-note">✅ Marked as solved — no ticket needed.</div>;
+  if (resolution === "ticket")
+    return <div className="resolution-note">🎫 Ticket created — the team will follow up.</div>;
+  if (disabled) return null;
+
+  const markSolved = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const res = await fetch("/api/tickets/solved", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ conversation_id: conversationId }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      onResolved("solved");
+    } catch (e) {
+      setError("Could not save. Please try again.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const openTicket = async () => {
+    setModal(true);
+    setError("");
+    if (draft) return;
+    setLoading(true);
+    try {
+      const res = await fetch("/api/tickets/draft", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ conversation_id: conversationId }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      setDraft(await res.json());
+    } catch (e) {
+      setError("Could not draft the ticket. You can still write it yourself below.");
+      setDraft({ title: "", body: "" });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const submitTicket = async () => {
+    if (busy || !draft?.title.trim()) return;
+    setBusy(true);
+    setError("");
+    try {
+      const res = await fetch("/api/tickets", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          conversation_id: conversationId,
+          title: draft.title,
+          body: draft.body,
+        }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      setModal(false);
+      onResolved("ticket");
+    } catch (e) {
+      setError("Could not create the ticket. Please try again.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="resolution-bar">
+      <span className="resolution-q">Did this solve your problem?</span>
+      <button className="res-btn solved" disabled={busy} onClick={markSolved}>
+        ✓ Yes, solved
+      </button>
+      <button className="res-btn ticket" disabled={busy} onClick={openTicket}>
+        No — create a ticket
+      </button>
+      {error && !modal && <span className="res-error">{error}</span>}
+
+      {modal && (
+        <div className="fb-overlay" onClick={() => !busy && setModal(false)}>
+          <div className="fb-modal ticket-modal" onClick={(e) => e.stopPropagation()}>
+            <h2>Review your ticket</h2>
+            <p className="ticket-hint">
+              Drafted from this chat — including what was already tried. Edit
+              anything. <b>Nothing is filed until you approve it.</b>
+            </p>
+            {loading ? (
+              <p className="ticket-loading">Drafting from your conversation…</p>
+            ) : (
+              <>
+                <input
+                  className="ticket-title"
+                  placeholder="Ticket title"
+                  maxLength={200}
+                  value={draft?.title || ""}
+                  onChange={(e) => setDraft({ ...draft, title: e.target.value })}
+                />
+                <textarea
+                  rows={10}
+                  value={draft?.body || ""}
+                  onChange={(e) => setDraft({ ...draft, body: e.target.value })}
+                />
+              </>
+            )}
+            {error && <div className="res-error">{error}</div>}
+            <div className="fb-actions">
+              <button className="fb-cancel" disabled={busy} onClick={() => setModal(false)}>
+                Cancel
+              </button>
+              <button
+                className="fb-submit"
+                disabled={loading || busy || !draft?.title.trim()}
+                onClick={submitTicket}
+              >
+                {busy ? "Filing…" : "Approve & create ticket"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 async function api(path, opts) {
   const res = await fetch(path, opts);
   if (!res.ok) throw new Error(await res.text());
@@ -122,6 +255,7 @@ export default function App() {
   const [user, setUser] = useState(undefined); // undefined = loading, null = signed out
   const [suggestions, setSuggestions] = useState([]);
   const [domain, setDomain] = useState(""); // "" | "HR" | "IT"
+  const [resolution, setResolution] = useState(""); // "" | "solved" | "ticket"
   const [sidebarOpen, setSidebarOpen] = useState(false); // mobile drawer
   const scrollRef = useRef(null);
 
@@ -156,6 +290,7 @@ export default function App() {
     // the server enforces the stored scope regardless of what we send.
     const conv = conversations.find((c) => c.id === id);
     setDomain(conv?.domain || "");
+    setResolution(conv?.resolution || "");
     setMessages(await api(`/api/conversations/${id}/messages`));
   };
 
@@ -163,6 +298,7 @@ export default function App() {
     if (streaming) return;
     setActiveId(null);
     setMessages([]);
+    setResolution("");
     setSidebarOpen(false);
   };
 
@@ -415,6 +551,22 @@ export default function App() {
                 )}
             </div>
           ))}
+          {activeId &&
+            !streaming &&
+            messages.length > 1 &&
+            messages[messages.length - 1]?.role === "assistant" &&
+            messages[messages.length - 1]?.content &&
+            !messages[messages.length - 1]?.error && (
+              <ResolutionBar
+                key={`${activeId}-${resolution}`}
+                conversationId={activeId}
+                resolution={resolution}
+                onResolved={(r) => {
+                  setResolution(r);
+                  refreshConversations();
+                }}
+              />
+            )}
         </div>
         <div className="composer">
           <textarea

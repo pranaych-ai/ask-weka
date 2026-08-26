@@ -23,6 +23,7 @@ import Qa from "./Qa.jsx";
 import Knowledge from "./Knowledge.jsx";
 import ApiKeys from "./ApiKeys.jsx";
 import Mcp from "./Mcp.jsx";
+import Tickets from "./Tickets.jsx";
 
 async function api(path) {
   const res = await fetch(path);
@@ -34,6 +35,7 @@ const NAV = [
   { key: "dashboard", label: "Dashboard" },
   { key: "qa", label: "QA" },
   { key: "knowledge", label: "Knowledge" },
+  { key: "tickets", label: "Tickets" },
   { key: "apikeys", label: "API Keys" },
   { key: "mcp", label: "MCP" },
   { key: "audit", label: "Audit" },
@@ -174,6 +176,7 @@ export default function Admin({ user }) {
           {section === "audit" && <AuditPage />}
           {section === "qa" && <Qa />}
           {section === "knowledge" && <Knowledge />}
+          {section === "tickets" && <Tickets />}
           {section === "apikeys" && <ApiKeys />}
           {section === "mcp" && <Mcp />}
         </SectionBoundary>

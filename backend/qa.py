@@ -68,7 +68,8 @@ def _fb_out(f: Feedback) -> dict:
         "answer_summary": f.answer_summary,
         "feedback_text": f.feedback_text,
         "thumbs": f.thumbs,
-        "username": f.username,
+        # No username here: feedback is anonymous (spec) — only a hash is
+        # stored and even that is never sent to the admin UI.
         "domain": f.domain,
         "sources": [s for s in (f.cited_sources or "").split("\n") if s],
         "review_status": f.review_status,

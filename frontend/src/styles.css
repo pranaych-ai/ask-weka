@@ -713,3 +713,59 @@ body {
     font-size: 22px;
   }
 }
+
+/* ---------- Solve-first ticketing ---------- */
+.resolution-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 8px 0 16px;
+  padding: 10px 14px;
+  background: var(--panel, #f6f7f9);
+  border: 1px solid var(--border, #e3e6ea);
+  border-radius: 10px;
+  font-size: 14px;
+}
+.resolution-q { font-weight: 600; }
+.res-btn {
+  border: 1px solid var(--border, #d6dade);
+  background: #fff;
+  border-radius: 8px;
+  padding: 6px 12px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.res-btn.solved:hover { border-color: #2e9e5b; color: #2e9e5b; }
+.res-btn.ticket:hover { border-color: #b7791f; color: #b7791f; }
+.res-btn:disabled { opacity: 0.6; cursor: default; }
+.res-error { color: #c0392b; font-size: 13px; }
+.resolution-note {
+  margin: 8px 0 16px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: #f0f8f2;
+  border: 1px solid #cde8d5;
+  font-size: 14px;
+}
+.ticket-modal { max-width: 640px; width: 92%; }
+.ticket-hint { font-size: 13px; color: #555; margin: 4px 0 10px; }
+.ticket-loading { padding: 24px 0; color: #666; }
+.ticket-title {
+  width: 100%;
+  box-sizing: border-box;
+  margin-bottom: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border, #d6dade);
+  border-radius: 8px;
+  font-size: 14px;
+}
+.ticket-body {
+  white-space: pre-wrap;
+  font-family: inherit;
+  font-size: 13px;
+  margin: 0;
+}
+.admin-hint { color: #666; font-size: 13px; max-width: 720px; }
+.qa-status.in_progress { background: #fdf3e0; color: #8a5a13; }
+.qa-status.closed { background: #ececec; color: #555; }

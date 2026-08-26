@@ -61,20 +61,19 @@ function Overview() {
       <h2>Recent negative / written feedback</h2>
       <table className="admin-table">
         <thead>
-          <tr><th>Time</th><th>User</th><th>Domain</th><th>Question</th><th>Feedback</th></tr>
+          <tr><th>Time</th><th>Domain</th><th>Question</th><th>Feedback</th></tr>
         </thead>
         <tbody>
           {stats.recent_negative.map((f) => (
             <tr key={f.id}>
               <td>{f.logged_time.replace("T", " ").slice(0, 16)}</td>
-              <td>{f.username}</td>
               <td>{f.domain}</td>
               <td>{f.question.slice(0, 80)}</td>
               <td className="admin-detail">{f.thumbs === "down" ? "👎 " : ""}{f.feedback_text}</td>
             </tr>
           ))}
           {stats.recent_negative.length === 0 && (
-            <tr><td colSpan={5} className="admin-empty">No negative feedback. 🎉</td></tr>
+            <tr><td colSpan={4} className="admin-empty">No negative feedback. 🎉</td></tr>
           )}
         </tbody>
       </table>
@@ -143,7 +142,7 @@ function FeedbackReview() {
         <>
           <table className="admin-table">
             <thead>
-              <tr><th>Time</th><th></th><th>Domain</th><th>User</th><th>Question</th><th>Status</th><th>Actions</th></tr>
+              <tr><th>Time</th><th></th><th>Domain</th><th>Question</th><th>Status</th><th>Actions</th></tr>
             </thead>
             <tbody>
               {data.items.map((f) => (
@@ -152,7 +151,6 @@ function FeedbackReview() {
                     <td>{f.logged_time.replace("T", " ").slice(0, 16)}</td>
                     <td>{f.thumbs === "up" ? "👍" : f.thumbs === "down" ? "👎" : "—"}</td>
                     <td>{f.domain}</td>
-                    <td>{f.username}</td>
                     <td>{f.question.slice(0, 70)}</td>
                     <td><span className={`qa-status ${f.review_status}`}>{f.review_status}</span></td>
                     <td onClick={(e) => e.stopPropagation()}>
@@ -169,7 +167,7 @@ function FeedbackReview() {
                   </tr>
                   {expanded === f.id && (
                     <tr key={`${f.id}-x`}>
-                      <td colSpan={7} className="qa-expand">
+                      <td colSpan={6} className="qa-expand">
                         <p><b>Question:</b> {f.question}</p>
                         <p><b>Answer summary:</b> {f.answer_summary}</p>
                         {f.feedback_text && <p><b>Feedback:</b> {f.feedback_text}</p>}
@@ -182,7 +180,7 @@ function FeedbackReview() {
                 </>
               ))}
               {data.items.length === 0 && (
-                <tr><td colSpan={7} className="admin-empty">No feedback matches.</td></tr>
+                <tr><td colSpan={6} className="admin-empty">No feedback matches.</td></tr>
               )}
             </tbody>
           </table>

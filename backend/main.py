@@ -147,11 +147,49 @@ with engine.begin() as _conn:
                 "ALTER TABLE golden_results ADD COLUMN ai_reasoning TEXT NOT NULL DEFAULT ''"
             )
 
+    # conversations.resolution ("" | "solved" | "ticket") — solve-first metric
+    if _dialect == "postgresql":
+        _conn.execute(_text(
+            "ALTER TABLE conversations ADD COLUMN IF NOT EXISTS "
+            "resolution VARCHAR(20) NOT NULL DEFAULT ''"
+        ))
+    else:
+        _rcols = [r[1] for r in _conn.exec_driver_sql("PRAGMA table_info(conversations)")]
+        if _rcols and "resolution" not in _rcols:
+            _conn.exec_driver_sql(
+                "ALTER TABLE conversations ADD COLUMN resolution VARCHAR(20) NOT NULL DEFAULT ''"
+            )
+
     # Unique history versions per KB section (works on postgres and sqlite)
     _conn.execute(_text(
         "CREATE UNIQUE INDEX IF NOT EXISTS uq_kb_section_version "
         "ON kb_section_versions (section_id, version)"
     ))
+
+# One-time anonymization: hash any pre-existing plaintext feedback usernames
+# so no name stays attached to what people asked (feedback is anonymous).
+def _anonymize_legacy_feedback() -> None:
+    import hashlib
+    import re
+
+    _hex64 = re.compile(r"^[0-9a-f]{64}$")
+    db = SessionLocal()
+    try:
+        rows = db.query(Feedback).all()
+        changed = False
+        for f in rows:
+            if f.username and not _hex64.match(f.username):
+                f.username = hashlib.sha256(
+                    f.username.strip().lower().encode()
+                ).hexdigest()
+                changed = True
+        if changed:
+            db.commit()
+    finally:
+        db.close()
+
+
+_anonymize_legacy_feedback()
 
 app = FastAPI(title="Ask WEKA POC")
 
@@ -187,6 +225,9 @@ from .knowledge import import_legacy_file_if_empty  # noqa: E402
 from .mcp_server import router as mcp_router  # noqa: E402
 from .public_api import router as public_router  # noqa: E402
 from .qa import router as qa_router  # noqa: E402
+from .slack_app import router as slack_router  # noqa: E402
+from .tickets import admin_router as tickets_admin_router  # noqa: E402
+from .tickets import router as tickets_router  # noqa: E402
 
 # One-time import of the legacy knowledge/kb.md export into the database.
 import_legacy_file_if_empty()
@@ -198,6 +239,9 @@ app.include_router(kb_router)
 app.include_router(keys_router)
 app.include_router(public_router)
 app.include_router(mcp_router)
+app.include_router(tickets_router)
+app.include_router(tickets_admin_router)
+app.include_router(slack_router)
 
 
 @app.get("/api/healthz")
@@ -213,6 +257,7 @@ class ConversationOut(BaseModel):
     id: str
     title: str
     domain: str
+    resolution: str
     updated_at: str
 
 
@@ -234,7 +279,11 @@ def list_conversations(
     )
     return [
         ConversationOut(
-            id=c.id, title=c.title, domain=c.domain, updated_at=c.updated_at.isoformat()
+            id=c.id,
+            title=c.title,
+            domain=c.domain,
+            resolution=c.resolution,
+            updated_at=c.updated_at.isoformat(),
         )
         for c in rows
     ]
@@ -274,6 +323,17 @@ from .analysis import extract_sources as _extract_sources  # noqa: E402
 from .analysis import summarize as _summarize  # noqa: E402
 
 
+def _rater_hash(username: str) -> str:
+    """Keyed pseudonym of the rater (HMAC with the server secret): enables
+    one-feedback-per-person per message without storing who rated what, and
+    cannot be reversed by hashing a list of known employee names."""
+    import hashlib
+    import hmac as _hmac
+
+    key = (SESSION_SECRET or "dev-only-insecure").encode()
+    return _hmac.new(key, username.strip().lower().encode(), hashlib.sha256).hexdigest()
+
+
 class FeedbackRequest(BaseModel):
     message_id: str
     thumbs: Optional[str] = None  # "up" | "down" | None (clear)
@@ -305,17 +365,20 @@ def submit_feedback(
         if m.role == "user":
             question = m.content
 
-    username = user["username"]
+    # Feedback is anonymous by design: only a one-way hash of the username is
+    # stored (needed to keep one feedback row per message per person), and it
+    # is never exposed through the admin API or UI.
+    rater = _rater_hash(user["username"])
 
     # One feedback row per (message, user): update in place so a changed or
     # cleared thumb never leaves contradictory rows behind.
     fb = (
         db.query(Feedback)
-        .filter(Feedback.message_id == msg.id, Feedback.username == username)
+        .filter(Feedback.message_id == msg.id, Feedback.username == rater)
         .first()
     )
     if not fb:
-        fb = Feedback(message_id=msg.id, username=username)
+        fb = Feedback(message_id=msg.id, username=rater)
         db.add(fb)
     fb.question = question.strip()
     fb.answer_summary = _summarize(answer)
@@ -325,11 +388,13 @@ def submit_feedback(
     fb.logged_time = datetime.now(timezone.utc)
     fb.cited_sources = "\n".join(_extract_sources(answer))
     fb.domain = _classify_domain(question, answer)
+    # Audit records that feedback was submitted, but never which question it
+    # was for — feedback must stay anonymous, so no message/conversation ids.
     log_event(
         db,
-        username,
+        user["username"],
         "feedback.submit",
-        f"message_id={msg.id} thumbs={fb.thumbs or 'none'} has_text={bool(fb.feedback_text)}",
+        f"thumbs={fb.thumbs or 'none'} has_text={bool(fb.feedback_text)}",
     )
     db.commit()
     return {"ok": True, "id": fb.id}

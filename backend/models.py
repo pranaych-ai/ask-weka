@@ -22,6 +22,8 @@ class Conversation(Base):
     username: Mapped[str] = mapped_column(String(120), default="anonymous", index=True)
     title: Mapped[str] = mapped_column(String(200), default="New conversation")
     domain: Mapped[str] = mapped_column(String(20), default="")  # "" | "HR" | "IT" scope
+    # "" = unresolved | "solved" (fixed without a ticket) | "ticket" (escalated)
+    resolution: Mapped[str] = mapped_column(String(20), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_now, onupdate=_now
@@ -218,6 +220,42 @@ class ApiKeyUsage(Base):
     status_code: Mapped[int] = mapped_column(default=200)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_now, index=True
+    )
+
+
+class SlackChannel(Base):
+    """Maps a Slack DM channel to its Ask WEKA conversation so context
+    persists across messages."""
+
+    __tablename__ = "slack_channels"
+
+    channel_id: Mapped[str] = mapped_column(String(30), primary_key=True)
+    conversation_id: Mapped[str] = mapped_column(String(36), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class Ticket(Base):
+    """Support ticket created only after the assistant could not solve the
+    issue — and only with the employee's explicit approval of the draft."""
+
+    __tablename__ = "tickets"
+    # One ticket per conversation, enforced by the database so concurrent
+    # approvals can never double-file.
+    __table_args__ = (UniqueConstraint("conversation_id", name="uq_ticket_conversation"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    conversation_id: Mapped[str] = mapped_column(String(36), default="", index=True)
+    username: Mapped[str] = mapped_column(String(120), index=True)
+    domain: Mapped[str] = mapped_column(String(20), default="")  # "IT" | "HR" | ""
+    title: Mapped[str] = mapped_column(String(200))
+    body: Mapped[str] = mapped_column(Text, default="")  # issue + what was already tried
+    status: Mapped[str] = mapped_column(String(20), default="open", index=True)
+    # "open" | "in_progress" | "resolved" | "closed"
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_now, index=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_now, onupdate=_now
     )
 
 
