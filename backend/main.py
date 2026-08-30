@@ -24,6 +24,13 @@ HISTORY_BUDGET = 30
 
 Base.metadata.create_all(bind=engine)
 
+# Enforce the dev/prod environment boundary before touching any data: a
+# database stamped for one environment refuses to serve the other.
+from .env import assert_environment_boundary, log_environment_summary  # noqa: E402
+
+assert_environment_boundary(engine)
+log_environment_summary()
+
 # Lightweight migration: add conversations.username for pre-existing tables
 # (create_all does not alter existing tables).
 with engine.begin() as _conn:

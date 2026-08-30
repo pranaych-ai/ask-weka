@@ -69,6 +69,24 @@ Per WEKA policy, AI clients access internal data through MCP, never directly.
 }
 ```
 
+## Per-environment credentials
+
+Every integration credential is configured **independently per environment**
+(workspace secrets for development, the deployment secrets pane for
+production) — never shared, never in source control:
+
+| Integration | Dev-tier credential | Production credential |
+|-------------|---------------------|-----------------------|
+| Okta SSO | dev app registration + dev redirect URI (or unset for anonymous dev mode) | production Okta app |
+| Gemini | separate dev API key | production API key |
+| Jira (Atlassian OAuth) | dev OAuth app | production OAuth app |
+| Slack | app installed in a dev/sandbox workspace | production workspace app |
+
+The database is stamped per environment and the app refuses to start across
+the boundary (see `docs/ARCHITECTURE.md` → Environment separation). Startup
+logs report `environment=` plus presence booleans for each credential group,
+so per-env configuration is verifiable without exposing any secret value.
+
 ## Slack (DM assistant + managed notifications)
 
 Outbound domain: `https://slack.com` (Web API) — the only Slack egress.

@@ -98,6 +98,35 @@ Internal AI assistant for WEKA employees (HR/IT questions over the internal know
 - Deployment: private visibility until SSO rollout is approved.
 - Planned MCP endpoint and new integrations re-enter the framework at Gate 1.
 
+## Environment separation (dev vs prod)
+
+- Two environments: **development** (Replit workspace / laptop) and
+  **production** (the Replit deployment; `REPLIT_DEPLOYMENT` is set).
+  Detection is centralized in `backend/env.py`.
+- **Database boundary (enforced in code)**: on startup the database is
+  stamped with the environment that created it (`environment_marker` table).
+  If the stamp doesn't match the running environment the app **refuses to
+  start** — dev can never run against the production database or a copy of
+  it, and production can never start against a dev database. A deliberate,
+  audited re-stamp requires `ASKWEKA_ENV_MARKER_OVERRIDE=1` (never set in
+  normal operation).
+- **Dev data is synthetic**: `python -m scripts.seed_dev_data` seeds
+  clearly-fake sample data (refuses to run in production or against a
+  production-stamped database). Production data must never be copied into
+  dev; if a sanitized snapshot is ever approved by IT, the override flag
+  documents the exception.
+- **Credentials are managed independently per environment**: workspace
+  secrets serve development; the deployment's secrets pane serves
+  production. Okta (dev app registration + dev redirect URI), Gemini
+  (separate dev API key), Jira/Atlassian (dev OAuth app), and Slack (dev
+  workspace app) must each use dev-tier credentials in the workspace and
+  production credentials only in the deployment pane. No secret value ever
+  lives in source control.
+- **Verification without exposing secrets**: startup logs one line —
+  `environment=<env> credentials_configured={okta/gemini/jira/slack: yes|no}`
+  (presence booleans only) — so each environment's configuration can be
+  audited from logs. `tests/test_env_separation.py` covers the boundary.
+
 ## Secrets
 
 - All secrets in Replit Secrets: `GEMINI_API_KEY`, `SESSION_SECRET`,
