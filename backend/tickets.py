@@ -214,6 +214,22 @@ async def create_ticket(
         f"id={t.id} conversation_id={conv.id}" + (f" jira={t.jira_key}" if t.jira_key else ""),
     )
     db.commit()
+
+    # Best-effort Slack notification AFTER the commit — a Slack outage or a
+    # skipped gate can never change the outcome of ticket creation.
+    import asyncio as _asyncio
+
+    from . import slack_service as _slack
+
+    lines = [f"*Your ticket was filed:* {t.title}"]
+    if t.jira_key and t.jira_url:
+        lines.append(f"• Jira: <{t.jira_url}|{t.jira_key}>")
+    lines.append(f"• Ask WEKA: <{_slack.public_base_url()}/|open your conversations>")
+    _asyncio.get_running_loop().create_task(
+        _slack.notify_user(
+            "ticket_notifications", user["username"], "\n".join(lines)
+        )
+    )
     return _ticket_out(t)
 
 

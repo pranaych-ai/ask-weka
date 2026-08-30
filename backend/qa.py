@@ -340,7 +340,28 @@ async def golden_run(user: dict = Depends(admin_audited)):
         run = db.get(GoldenRun, run_id)
         run.status = "error" if any_error else "done"
         db.commit()
-        return _run_out(run, include_results=True)
+        out = _run_out(run, include_results=True)
+
+        # Best-effort Slack notifications — never affect the run's result.
+        import asyncio as _asyncio
+
+        from . import slack_service as _slack
+
+        summary = (
+            f"*Golden run complete* — {out['passed']} passed, {out['failed']} failed, "
+            f"{out['flagged']} flagged of {out['total']} questions."
+        )
+        _asyncio.get_running_loop().create_task(
+            _slack.notify_user("golden_notifications", user["username"], summary)
+        )
+        if out["failed"] > 0 or out["flagged"] > 0:
+            _asyncio.get_running_loop().create_task(
+                _slack.notify_channel(
+                    "regression_posts",
+                    f":warning: {summary} Review at {_slack.public_base_url()}/admin",
+                )
+            )
+        return out
     finally:
         db.close()
 

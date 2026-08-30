@@ -22,6 +22,7 @@ from .audit import log_event
 from .db import SessionLocal
 from .models import Conversation, Message, SlackChannel
 from .prompts import build_system_prompt
+from . import slack_service as svc
 
 logger = logging.getLogger("askweka.slack")
 
@@ -48,11 +49,28 @@ def _channel_lock(channel: str) -> asyncio.Lock:
 
 
 def _slack_enabled() -> bool:
-    return bool(os.environ.get("SLACK_BOT_TOKEN") and os.environ.get("SLACK_SIGNING_SECRET"))
+    """Inbound endpoints exist only when credentials are set (Replit Secrets).
+
+    DM chat additionally honors the database-managed configuration (master
+    switch + dm_chat feature toggle); with no config row yet the defaults
+    keep existing behavior working (credential fallback)."""
+    if not svc.creds_configured():
+        return False
+    db = SessionLocal()
+    try:
+        row = svc.get_integration(db)
+        ok = row.enabled and svc.parse_features(row).get("dm_chat", True)
+        db.commit()
+        return ok
+    except Exception:
+        logger.exception("Slack config check failed — falling back to env-only")
+        return True
+    finally:
+        db.close()
 
 
 def _verify_signature(body: bytes, timestamp: str, signature: str) -> bool:
-    secret = os.environ.get("SLACK_SIGNING_SECRET", "")
+    secret = svc.signing_secret()
     if not secret or not timestamp or not signature:
         return False
     try:
@@ -66,16 +84,9 @@ def _verify_signature(body: bytes, timestamp: str, signature: str) -> bool:
 
 
 async def _slack_call(method: str, payload: dict) -> dict:
-    import httpx
-
-    token = os.environ.get("SLACK_BOT_TOKEN", "")
-    async with httpx.AsyncClient(timeout=10) as client:
-        r = await client.post(
-            f"{SLACK_API}/{method}",
-            json=payload,
-            headers={"Authorization": f"Bearer {token}"},
-        )
-        return r.json()
+    # All Slack Web API access goes through the shared service boundary
+    # (credentials from env only, one automatic retry on rate limits).
+    return await svc.slack_api(method, payload)
 
 
 def _allowed_domains() -> tuple:
@@ -248,3 +259,40 @@ async def slack_events(request: Request):
         )
 
     return {"ok": True}
+
+
+# ---------- Slash-command / interactivity scaffolding ----------
+# The generated app manifest registers these URLs. Behavior beyond safe
+# acknowledgement is out of scope for now — but the endpoints are protected
+# with the same signature verification and never leak credentials.
+
+
+@router.post("/commands")
+async def slack_commands(request: Request):
+    if not _slack_enabled():
+        return Response(status_code=404)
+    body = await request.body()
+    if not _verify_signature(
+        body,
+        request.headers.get("X-Slack-Request-Timestamp", ""),
+        request.headers.get("X-Slack-Signature", ""),
+    ):
+        return Response(status_code=401)
+    return {
+        "response_type": "ephemeral",
+        "text": "Slash commands aren't enabled yet — DM me your question instead!",
+    }
+
+
+@router.post("/interactions")
+async def slack_interactions(request: Request):
+    if not _slack_enabled():
+        return Response(status_code=404)
+    body = await request.body()
+    if not _verify_signature(
+        body,
+        request.headers.get("X-Slack-Request-Timestamp", ""),
+        request.headers.get("X-Slack-Signature", ""),
+    ):
+        return Response(status_code=401)
+    return Response(status_code=200)

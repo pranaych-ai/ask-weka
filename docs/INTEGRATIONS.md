@@ -69,6 +69,30 @@ Per WEKA policy, AI clients access internal data through MCP, never directly.
 }
 ```
 
+## Slack (DM assistant + managed notifications)
+
+Outbound domain: `https://slack.com` (Web API) — the only Slack egress.
+
+- **Setup**: admin portal → Slack tab generates the app manifest
+  (deployment-aware URLs for `/api/slack/events`, `/api/slack/commands`,
+  `/api/slack/interactions`). An admin creates the app from the manifest at
+  api.slack.com, installs it, and puts the bot token + signing secret into
+  Replit Secrets — credentials never pass through the app's API or UI.
+- **Verification**: server-side `auth.test`; only non-secret workspace/bot
+  metadata and status are stored.
+- **Inbound**: all Slack endpoints verify the `v0` HMAC signature and a 5-min
+  replay window. DM chat resolves the sender's WEKA email via `users.info`
+  (domain-allowlisted) and reuses the normal chat pipeline + audit trail.
+- **Outbound data flow**: ticket confirmations (title + Jira/Ask WEKA links)
+  to the ticket owner, golden-run summaries to the initiating admin, optional
+  regression + sync-failure posts and an AI-written usage digest (aggregate
+  counts only) to an admin-configured channel. Every send is gated on admin
+  feature toggles and, for user-specific messages, explicit employee opt-in
+  (Slack tab / Notifications preferences). Messages use Block Kit; rate-limited
+  calls retry once.
+- **Bot scopes** (minimum needed): `chat:write`, `im:read`, `im:history`,
+  `im:write`, `users:read`, `users:read.email`, `files:write`, `commands`.
+
 ### Upgrade path
 Tokens are scoped, expiring bearer credentials for now. When IT provisions an
 OAuth authorization server, `/mcp` should move to the standard MCP OAuth flow

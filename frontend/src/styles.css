@@ -781,3 +781,82 @@ body {
 .jira-map-row input { flex: 1; padding: 4px 8px; }
 .jira-ask { border: 1px solid #cfd8dc; border-radius: 8px; padding: 10px 14px; background: #f7f9fb; }
 .jira-ask p { margin: 0 0 8px; }
+
+/* ---------- Slack integration ---------- */
+.slack-notice {
+  background: #103c2a;
+  border: 1px solid #1d6b4a;
+  color: #9fe8c4;
+  border-radius: 8px;
+  padding: 8px 12px;
+  margin: 10px 0;
+}
+.slack-status-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 12px 0;
+}
+.slack-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 12px 0 20px;
+}
+.slack-manifest-pre {
+  background: #11131a;
+  border: 1px solid #2a2d3a;
+  border-radius: 8px;
+  padding: 12px;
+  max-height: 380px;
+  overflow: auto;
+  font-size: 12px;
+  margin-top: 8px;
+}
+.slack-config-row {
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 14px;
+}
+.slack-config-row label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+}
+.slack-pref-row {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 10px 4px;
+  cursor: pointer;
+}
+.slack-pref-row.off {
+  opacity: 0.5;
+  cursor: default;
+}
+.slack-pref-row span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.slack-pref-row small {
+  opacity: 0.75;
+}
+.slack-prefs-note {
+  opacity: 0.85;
+  font-size: 14px;
+}
+.slack-prefs-saved {
+  color: #7ed9a7;
+  margin-top: 6px;
+}
+.logout-link.linklike {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}

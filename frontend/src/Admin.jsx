@@ -24,6 +24,7 @@ import Knowledge from "./Knowledge.jsx";
 import ApiKeys from "./ApiKeys.jsx";
 import Mcp from "./Mcp.jsx";
 import Tickets from "./Tickets.jsx";
+import SlackAdmin from "./SlackAdmin.jsx";
 
 async function api(path) {
   const res = await fetch(path);
@@ -37,6 +38,7 @@ const NAV = [
   { key: "knowledge", label: "Knowledge" },
   { key: "tickets", label: "Tickets" },
   { key: "apikeys", label: "API Keys" },
+  { key: "slack", label: "Slack" },
   { key: "mcp", label: "MCP" },
   { key: "audit", label: "Audit" },
 ];
@@ -178,6 +180,7 @@ export default function Admin({ user }) {
           {section === "knowledge" && <Knowledge />}
           {section === "tickets" && <Tickets />}
           {section === "apikeys" && <ApiKeys />}
+          {section === "slack" && <SlackAdmin />}
           {section === "mcp" && <Mcp />}
         </SectionBoundary>
       </main>

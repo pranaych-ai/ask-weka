@@ -334,6 +334,93 @@ async function api(path, opts) {
   return res.json();
 }
 
+function SlackPrefs({ onClose }) {
+  const [data, setData] = useState(null);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    api("/api/slack/prefs").then(setData).catch(() => setError("Could not load preferences."));
+  }, []);
+
+  const toggle = async (key, value) => {
+    if (busy) return;
+    setBusy(true);
+    setError("");
+    setSaved(false);
+    try {
+      const res = await fetch("/api/slack/prefs", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prefs: { [key]: value } }),
+      });
+      if (!res.ok) {
+        let msg = "Could not save.";
+        try {
+          const d = await res.json();
+          if (d.detail) msg = d.detail;
+        } catch {}
+        throw new Error(msg);
+      }
+      const out = await res.json();
+      setData((d) => ({ ...d, prefs: out.prefs, slack_linked: out.slack_linked }));
+      setSaved(true);
+    } catch (e) {
+      setError(e.message || "Could not save.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="fb-overlay" onClick={onClose}>
+      <div className="fb-modal" onClick={(e) => e.stopPropagation()}>
+        <h2>Slack notifications</h2>
+        {!data && !error && <p>Loading…</p>}
+        {data && !data.integration_active && (
+          <p className="slack-prefs-note">
+            Slack notifications aren't available yet — an administrator has to enable the
+            Slack integration first.
+          </p>
+        )}
+        {data && data.integration_active && (
+          <>
+            <p className="slack-prefs-note">
+              Opt in to the Slack messages you want. Nothing is sent without your consent.
+              {data.slack_linked && data.slack_email && (
+                <> Linked to Slack via <b>{data.slack_email}</b>.</>
+              )}
+            </p>
+            {data.available.map((f) => (
+              <label key={f.key} className={`slack-pref-row ${f.enabled ? "" : "off"}`}>
+                <input
+                  type="checkbox"
+                  disabled={busy || !f.enabled}
+                  checked={!!data.prefs[f.key]}
+                  onChange={(e) => toggle(f.key, e.target.checked)}
+                />
+                <span>
+                  <b>{f.label}</b>
+                  <small>
+                    {f.description}
+                    {!f.enabled && " (not enabled by your administrator)"}
+                  </small>
+                </span>
+              </label>
+            ))}
+          </>
+        )}
+        {error && <div className="res-error">{error}</div>}
+        {saved && !error && <div className="slack-prefs-saved">Saved ✓</div>}
+        <div className="fb-actions">
+          <button className="fb-cancel" onClick={onClose}>Close</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const [conversations, setConversations] = useState([]);
   const [activeId, setActiveId] = useState(null);
@@ -345,6 +432,7 @@ export default function App() {
   const [domain, setDomain] = useState(""); // "" | "HR" | "IT"
   const [resolution, setResolution] = useState(""); // "" | "solved" | "ticket"
   const [sidebarOpen, setSidebarOpen] = useState(false); // mobile drawer
+  const [showSlackPrefs, setShowSlackPrefs] = useState(false);
   const scrollRef = useRef(null);
 
   const refreshConversations = () =>
@@ -517,6 +605,7 @@ export default function App() {
   return (
     <div className="app">
       {sidebarOpen && <div className="sidebar-backdrop" onClick={() => setSidebarOpen(false)} />}
+      {showSlackPrefs && <SlackPrefs onClose={() => setShowSlackPrefs(false)} />}
       <aside className={`sidebar ${sidebarOpen ? "open" : ""}`}>
         <button className="new-chat" onClick={newConversation}>
           + New chat
@@ -548,6 +637,9 @@ export default function App() {
               Admin
             </a>
           )}
+          <button className="logout-link linklike" onClick={() => setShowSlackPrefs(true)}>
+            Notifications
+          </button>
           {user.auth_enabled && (
             <a className="logout-link" href="/auth/logout">
               Sign out

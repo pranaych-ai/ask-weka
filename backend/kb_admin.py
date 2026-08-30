@@ -368,6 +368,20 @@ async def source_sync(
     src = db.get(KnowledgeSource, source_id)
     if not src:
         raise HTTPException(404, "Source not found")
+
+    def _alert_sync_failure(reason: str) -> None:
+        # Best-effort admin alert — never changes the sync outcome.
+        import asyncio as _asyncio
+
+        from . import slack_service as _slack
+
+        _asyncio.get_running_loop().create_task(
+            _slack.notify_channel(
+                "sync_alerts",
+                f":x: *Knowledge source sync failed* — {src.name}: {reason[:300]}",
+            )
+        )
+
     if src.type != "upload":
         src.last_sync_status = "error"
         src.last_sync_detail = (
@@ -376,6 +390,7 @@ async def source_sync(
             "Paste content into a KB section manually for now."
         )
         db.commit()
+        _alert_sync_failure(src.last_sync_detail)
         raise HTTPException(400, src.last_sync_detail)
     if file is None:
         raise HTTPException(400, "Attach a markdown or text file to sync")
