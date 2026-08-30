@@ -63,8 +63,11 @@ def _slack_enabled() -> bool:
         db.commit()
         return ok
     except Exception:
-        logger.exception("Slack config check failed — falling back to env-only")
-        return True
+        # The database-backed master switch is authoritative once credentials
+        # exist. If its state cannot be read, fail closed rather than risk
+        # accepting events after an administrator disabled Slack.
+        logger.exception("Slack config check failed — inbound Slack disabled")
+        return False
     finally:
         db.close()
 

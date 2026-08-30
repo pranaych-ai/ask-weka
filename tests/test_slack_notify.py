@@ -16,6 +16,7 @@ from fastapi.testclient import TestClient
 
 import backend.slack_service as svc
 import backend.slack_scheduler as sched
+import backend.slack_app as slack_app
 from backend.db import SessionLocal
 from backend.main import app
 from backend.models import ActivityLog, SlackIntegration, SlackUserPref
@@ -120,6 +121,50 @@ def test_gate_blocks_disabled_feature_and_integration(monkeypatch):
         assert svc.check_gate(db, "sync_alerts")[1] == "not_verified"
     finally:
         db.close()
+
+
+def test_inbound_slack_fails_closed_when_config_read_errors(monkeypatch):
+    _creds(monkeypatch)
+
+    class BrokenSession:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(slack_app, "SessionLocal", BrokenSession)
+
+    def broken_config(_db):
+        raise RuntimeError("database unavailable")
+
+    monkeypatch.setattr(slack_app.svc, "get_integration", broken_config)
+    assert slack_app._slack_enabled() is False
+
+    handled = []
+
+    async def fake_answer(*args):
+        handled.append(args)
+
+    monkeypatch.setattr(slack_app, "_answer_dm", fake_answer)
+    response = client.post(
+        "/api/slack/events",
+        json={
+            "type": "event_callback",
+            "event": {
+                "type": "message",
+                "channel_type": "im",
+                "channel": "D1",
+                "user": "U1",
+                "text": "hello",
+            },
+        },
+    )
+    assert response.status_code == 404
+    assert handled == []
 
 
 def test_skipped_send_is_best_effort_and_audited(monkeypatch):
