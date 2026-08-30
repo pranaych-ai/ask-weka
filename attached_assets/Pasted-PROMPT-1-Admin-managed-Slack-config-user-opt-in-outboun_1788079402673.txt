@@ -1,0 +1,58 @@
+PROMPT 1 — Admin-managed Slack config, user opt-in, outbound notifications
+Today the Slack bot in backend/slack_app.py is configured only by two environment variables (SLACK_BOT_TOKEN, SLACK_SIGNING_SECRET) and supports only 1:1 DM chat. I want ALL Slack configuration managed from the existing admin portal, plus per-user opt-in preferences and outbound notifications.
+
+Database (backend/models.py)
+Create a table "slack_integration" — a singleton (one row, fixed primary key "default"):
+
+Slack app id, team (workspace) id, bot user id, bot display name (filled from auth.test)
+bot token and signing secret, encrypted at rest via the shared Fernet helper ("enc:" prefix, same as JiraAccount tokens)
+connection status (unconfigured / connected / error) and last-verified timestamp
+enabled features — boolean flags the admin controls: dm_notifications, channel_posts, digests, mentions, dm_chat, slash_commands, thread_summaries, interactivity, link_unfurl
+default notification channel id (optional, for channel posts and digests)
+digest schedule (optional, e.g. "daily 09:00" with a timezone)
+slash command configuration: JSON list where each entry has the command name (e.g. "/ask-it"), a description, a domain ("IT" / "HR" / "" — reuses the existing conversation/KB domain scoping), and an instructions/system-prompt text that steers the AI answer for that command
+created/updated timestamps and who configured it
+Create a table "slack_user_prefs" — one row per employee (username = work email, same key as everywhere else in this app):
+
+username (primary key), their Slack user id (resolved automatically — see below)
+per-feature opt-in booleans mirroring the feature list (a user gets a feature only if BOTH the admin enabled it AND they opted in)
+opt-in consent timestamp
+Config precedence: the Slack service reads the DB row first and falls back to the existing SLACK_BOT_TOKEN / SLACK_SIGNING_SECRET env vars if the row is unconfigured, so nothing breaks during migration. Add an admin "import from environment" action that copies the env credentials into the encrypted row (after verifying via auth.test) so the env vars can then be retired.
+
+API endpoints
+Admin (new router backend/slack_admin.py, prefix /api/admin/slack, dependencies=[Depends(admin_audited)]):
+
+GET/PUT the integration. When the admin submits a bot token + signing secret, verify the token by calling Slack's auth.test; on success store app id, team id, bot user id, and bot name from the response and mark status connected; on failure return a clear error and store nothing. Never return the decrypted token or signing secret in any response — only a masked hint (last 4 characters) and the connection status.
+GET a generated Slack app manifest (YAML) pre-filled with: the bot name "Ask WEKA", the bot scopes we need (chat:write, im:write, im:history, users:read, users:read.email, app_mentions:read, channels:history, groups:history, commands, links:read, links:write, files:write, reactions:write), this deployment's public HTTPS URL in the event subscription URL (https://<app-domain>/api/slack/events), interactivity URL (https://<app-domain>/api/slack/interactivity), and each configured slash command's URL (https://<app-domain>/api/slack/commands). Derive the public URL the same way jira_oauth.py's _redirect_uri does (https behind the Replit proxy).
+POST send-test-message: DMs the requesting admin from the bot to confirm the connection works.
+DELETE disconnect: wipe the stored secrets (keep feature flags), status back to unconfigured.
+End users (extend backend/slack_app.py's router, Depends(require_user)):
+
+GET/PUT my Slack preferences. Show which features the admin has made available; the user can opt into only those. On first opt-in, resolve their Slack user id by calling users.lookupByEmail with their Ask WEKA username (work email). If the lookup fails, return a friendly error saying their Slack email doesn't match their work email. Record the consent timestamp and an audit event.
+Outbound notification service (new backend/slack_service.py)
+Wrap the Slack Web API with httpx like the existing _slack_call:
+
+send a DM to a user by username (look up their slack_user_prefs row, conversations.open, then post)
+post to a channel; upload a file to a channel or DM
+every send goes through ONE gate function that checks in order: integration connected → feature enabled by admin → recipient opted in. If any check fails, silently skip and log a low-noise audit event — never error the calling flow.
+handle Slack rate limiting (respect Retry-After, retry once)
+never log the bot token or signing secret anywhere; decrypt only in memory at call time
+Wire outbound DM notifications into the app events that exist today:
+
+tickets.py: when a ticket is filed → DM the employee "Your ticket <ITSM-123> was created" with a link button to the Jira issue and to the Ask WEKA conversation
+qa.py: when a golden-question run finishes → DM the admin who started it with pass/fail counts; if any regression failed, also post to the default channel (if channel_posts is enabled)
+kb_admin.py / knowledge sync: when a source sync fails → DM the admins
+digests: on the configured schedule, ask the existing chat pipeline (providers.get_provider()) to write a short usage digest — questions asked, thumbs-up/down counts, top unresolved topics, open tickets — and post it to the default channel (requires digests + channel_posts enabled). There is no background-job system in this repo: add a small asyncio scheduler task started from the FastAPI lifespan/startup hook (fine for the single-instance POC), checking the schedule every minute and recording last-run time in the integration row so restarts don't double-post.
+Use Slack Block Kit for all outbound messages: a title, a short body, and a button linking back to Ask WEKA (and to Jira where relevant).
+
+Frontend
+Admin portal: add a "Slack" tab alongside the existing ones (follow Admin.jsx / ApiKeys.jsx patterns and styles.css — no new UI libraries). Step-by-step setup flow: (1) show the generated manifest with a copy button and a link to api.slack.com/apps → "Create New App" → "From a manifest", (2) paste bot token + signing secret (password-style inputs; on edit never prefill — show "saved — enter a new value to replace" and update only if a new value is typed), (3) verify and show the bot name, (4) feature toggles with one-line plain-English descriptions, (5) default channel + digest schedule, (6) slash command list — add/edit/remove, each with name, description, domain dropdown (IT / HR / all), and instructions textarea, (7) send-test-message button.
+User side: a "Slack notifications" section in the main app (settings area of App.jsx): show which features are available, let the user opt in/out of each, with a line saying messages come from the @Ask WEKA bot, and surface the email-mismatch error clearly.
+Security requirements (do not skip any)
+Secrets encrypted at rest via backend/crypto.py; decrypted only in memory at send/verify time; never in API responses, never in logs. Flag to the owner that DB-stored credentials deviate from replit.md's "secrets only from Replit Secrets" rule the same way the encrypted Jira tokens do — record it in docs/ARCHITECTURE.md's deviations section for IT sign-off.
+Admin endpoints ride the admin_audited dependency (RBAC + audit, automatically); user preference endpoints require a logged-in session.
+All Slack sends are server-side; the frontend never sees tokens.
+Every configuration change lands in the activity log (parameter names / event ids only, no values).
+Finish with: pytest green (add tests for the gate function, secret masking, and manifest generation), frontend rebuilt, and a reminder to run the weka-compliance-audit skill.
+
+(The original spec's addendum about embedding Slack setup in a per-dashboard create/edit dialog is dropped — Ask WEKA has no such dialog; the admin Slack tab is the single management surface.)
