@@ -17,7 +17,7 @@ from fastapi.testclient import TestClient
 import backend.slack_app as slack_module
 from backend.db import SessionLocal
 from backend.main import app
-from backend.models import ActivityLog, Conversation, SlackChannel
+from backend.models import ActivityLog, Conversation, SlackChannel, SlackIntegration
 
 client = TestClient(app)
 
@@ -42,6 +42,16 @@ def _signed_post(payload: dict, secret: str = SECRET, ts: str = None):
 def _enable(monkeypatch):
     monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
     monkeypatch.setenv("SLACK_SIGNING_SECRET", SECRET)
+    db = SessionLocal()
+    try:
+        row = db.get(SlackIntegration, 1) or SlackIntegration(id=1)
+        row.enabled = True
+        row.verified = True
+        row.features = json.dumps({"dm_chat": True})
+        db.merge(row)
+        db.commit()
+    finally:
+        db.close()
 
 
 def test_disabled_without_secrets(monkeypatch):
@@ -91,6 +101,7 @@ def test_dm_answered_and_logged(monkeypatch):
         return {"ok": True}
 
     monkeypatch.setattr(slack_module, "_slack_call", fake_slack_call)
+    monkeypatch.setattr(slack_module.svc, "slack_api", fake_slack_call)
 
     event = {
         "type": "event_callback",
@@ -150,6 +161,7 @@ def test_unverified_user_refused(monkeypatch):
         return {"ok": True}
 
     monkeypatch.setattr(slack_module, "_slack_call", fake_slack_call)
+    monkeypatch.setattr(slack_module.svc, "slack_api", fake_slack_call)
 
     event = {
         "type": "event_callback",

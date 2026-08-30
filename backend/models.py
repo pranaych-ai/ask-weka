@@ -293,6 +293,63 @@ class AppSetting(Base):
     )
 
 
+class SlackIntegration(Base):
+    """Singleton row of NON-SECRET Slack integration state.
+
+    The bot token and signing secret live ONLY in Replit Secrets
+    (SLACK_BOT_TOKEN / SLACK_SIGNING_SECRET) — never in this table, never
+    accepted or returned by any API. This row stores admin configuration and
+    verified workspace/bot metadata only.
+    """
+
+    __tablename__ = "slack_integration"
+
+    id: Mapped[int] = mapped_column(primary_key=True, default=1)
+    enabled: Mapped[bool] = mapped_column(default=True)  # admin master switch
+    verified: Mapped[bool] = mapped_column(default=False)
+    team_id: Mapped[str] = mapped_column(String(30), default="")
+    team_name: Mapped[str] = mapped_column(String(200), default="")
+    workspace_url: Mapped[str] = mapped_column(String(300), default="")
+    bot_user_id: Mapped[str] = mapped_column(String(30), default="")
+    bot_name: Mapped[str] = mapped_column(String(200), default="")
+    last_verified_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_verify_error: Mapped[str] = mapped_column(String(300), default="")
+    # JSON object: feature key -> bool (see slack_service.FEATURES)
+    features: Mapped[str] = mapped_column(Text, default="")
+    # Channel for admin-facing posts (digests, regressions, sync alerts)
+    notify_channel: Mapped[str] = mapped_column(String(120), default="")
+    digest_time: Mapped[str] = mapped_column(String(10), default="09:00")  # HH:MM
+    digest_timezone: Mapped[str] = mapped_column(String(60), default="UTC")
+    # Idempotency key of the last successful digest, e.g. "2026-08-30"
+    digest_last_run: Mapped[str] = mapped_column(String(20), default="")
+    # JSON list of slash command definitions [{command, description, usage_hint}]
+    slash_commands: Mapped[str] = mapped_column(Text, default="")
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_now, onupdate=_now
+    )
+
+
+class SlackUserPref(Base):
+    """Per-employee Slack notification consent + resolved Slack identity.
+
+    Employees opt in per feature; a delivery that is user-specific is only
+    ever sent when the matching consent is true AND the Slack account was
+    resolved from their WEKA email."""
+
+    __tablename__ = "slack_user_prefs"
+
+    username: Mapped[str] = mapped_column(String(120), primary_key=True)
+    slack_user_id: Mapped[str] = mapped_column(String(30), default="")
+    slack_email: Mapped[str] = mapped_column(String(200), default="")
+    # JSON object: feature key -> bool (consent)
+    prefs: Mapped[str] = mapped_column(Text, default="")
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_now, onupdate=_now
+    )
+
+
 class KnowledgeSource(Base):
     """External content source registry with sync status."""
 

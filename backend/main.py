@@ -255,6 +255,9 @@ from .qa import router as qa_router  # noqa: E402
 from .jira_oauth import admin_router as jira_admin_router  # noqa: E402
 from .jira_oauth import router as jira_router  # noqa: E402
 from .slack_app import router as slack_router  # noqa: E402
+from .slack_admin import prefs_router as slack_prefs_router  # noqa: E402
+from .slack_admin import router as slack_admin_router  # noqa: E402
+from . import slack_scheduler  # noqa: E402
 from .tickets import admin_router as tickets_admin_router  # noqa: E402
 from .tickets import router as tickets_router  # noqa: E402
 
@@ -271,8 +274,21 @@ app.include_router(mcp_router)
 app.include_router(tickets_router)
 app.include_router(tickets_admin_router)
 app.include_router(slack_router)
+app.include_router(slack_admin_router)
+app.include_router(slack_prefs_router)
 app.include_router(jira_router)
 app.include_router(jira_admin_router)
+
+
+@app.on_event("startup")
+async def _start_slack_scheduler():
+    """Single-instance digest scheduler tied to the app lifecycle."""
+    slack_scheduler.start()
+
+
+@app.on_event("shutdown")
+async def _stop_slack_scheduler():
+    await slack_scheduler.stop()
 
 
 @app.get("/api/healthz")

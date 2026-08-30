@@ -368,6 +368,20 @@ async def source_sync(
     src = db.get(KnowledgeSource, source_id)
     if not src:
         raise HTTPException(404, "Source not found")
+
+    def _alert_sync_failure(reason: str) -> None:
+        # Best-effort alerts: DM the initiating admin (subject to explicit
+        # sync-alert consent) and also post to the optional admin channel.
+        # Neither delivery can change the sync outcome.
+        import asyncio as _asyncio
+
+        from . import slack_service as _slack
+
+        text = f":x: *Knowledge source sync failed* — {src.name}: {reason[:300]}"
+        _asyncio.get_running_loop().create_task(
+            _slack.notify_source_sync_failure(user["username"], text)
+        )
+
     if src.type != "upload":
         src.last_sync_status = "error"
         src.last_sync_detail = (
@@ -376,18 +390,32 @@ async def source_sync(
             "Paste content into a KB section manually for now."
         )
         db.commit()
+        _alert_sync_failure(src.last_sync_detail)
         raise HTTPException(400, src.last_sync_detail)
     if file is None:
-        raise HTTPException(400, "Attach a markdown or text file to sync")
-    raw = await file.read()
+        detail = "Attach a markdown or text file to sync"
+        _alert_sync_failure(detail)
+        raise HTTPException(400, detail)
+    try:
+        raw = await file.read()
+    except Exception:
+        detail = "Could not read the uploaded source file"
+        _alert_sync_failure(detail)
+        raise HTTPException(400, detail)
     if len(raw) > 2_000_000:
-        raise HTTPException(400, "File too large (max 2 MB)")
+        detail = "File too large (max 2 MB)"
+        _alert_sync_failure(detail)
+        raise HTTPException(400, detail)
     try:
         text = raw.decode("utf-8")
     except UnicodeDecodeError:
-        raise HTTPException(400, "File must be UTF-8 text/markdown")
+        detail = "File must be UTF-8 text/markdown"
+        _alert_sync_failure(detail)
+        raise HTTPException(400, detail)
     if not text.strip():
-        raise HTTPException(400, "File is empty")
+        detail = "File is empty"
+        _alert_sync_failure(detail)
+        raise HTTPException(400, detail)
 
     # One section per source: update it (with a version snapshot) if it exists.
     s = db.query(KBSection).filter(KBSection.source_id == src.id).first()

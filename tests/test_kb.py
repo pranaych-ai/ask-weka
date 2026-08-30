@@ -15,6 +15,7 @@ from backend.knowledge import load_knowledge, split_markdown_sections
 from backend.main import app
 from backend.models import ActivityLog, KBSection
 from backend.prompts import build_system_prompt
+from backend import slack_service
 
 client = TestClient(app)
 
@@ -83,7 +84,7 @@ def test_versioning_and_revert():
         db.close()
 
 
-def test_sources_upload_sync_and_manual_placeholder():
+def test_sources_upload_sync_and_manual_placeholder(monkeypatch):
     src = client.post(
         "/api/admin/kb/sources",
         json={"name": "HR upload", "type": "upload", "domain": "HR"},
@@ -112,10 +113,19 @@ def test_sources_upload_sync_and_manual_placeholder():
     assert me["last_sync_status"] == "ok"
 
     # Connector types are manual placeholders
+    alerts = []
+
+    async def fake_sync_alert(username, text):
+        alerts.append((username, text))
+        return True
+
+    monkeypatch.setattr(slack_service, "notify_source_sync_failure", fake_sync_alert)
     notion = client.post(
         "/api/admin/kb/sources", json={"name": "Notion KB", "type": "notion"}
     ).json()
     assert client.post(f"/api/admin/kb/sources/{notion['id']}/sync").status_code == 400
+    assert alerts and alerts[0][0] == "anonymous"
+    assert "Notion KB" in alerts[0][1]
     assert "kb.source.sync" in _audit_actions()
 
     # Bad uploads rejected
