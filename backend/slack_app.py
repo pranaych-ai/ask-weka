@@ -150,11 +150,23 @@ async def _answer_dm_inner(channel: str, slack_user: str, text: str) -> None:
             )
             return
 
+        from .ai_safety import SAFE_REFUSAL, screen_answer, screen_question
+
         db = SessionLocal()
         try:
             conv = _conversation_for_channel(db, channel, email)
             conv.messages.append(Message(role="user", content=text))
             log_event(db, email, "chat.message", f"conversation_id={conv.id} via=slack")
+            # Input screen BEFORE the provider sees the question — logged even
+            # if generation fails below.
+            inbound = screen_question(text)
+            if inbound.findings:
+                log_event(
+                    db,
+                    email,
+                    "chat.injection_flagged",
+                    f"conversation_id={conv.id} findings={','.join(inbound.findings)} via=slack",
+                )
             db.commit()
             conversation_id = conv.id
             history = [
@@ -175,6 +187,13 @@ async def _answer_dm_inner(channel: str, slack_user: str, text: str) -> None:
         if not answer:
             raise RuntimeError("Empty answer from model")
 
+        # Output safety gate before anything is persisted or sent to Slack.
+        safety_events: list[tuple[str, str]] = []
+        gate = screen_answer(answer)
+        if gate.blocked:
+            answer = SAFE_REFUSAL
+            safety_events.append(("chat.safety_blocked", ",".join(gate.findings)))
+
         db = SessionLocal()
         try:
             msg = Message(conversation_id=conversation_id, role="assistant", content=answer)
@@ -186,6 +205,13 @@ async def _answer_dm_inner(channel: str, slack_user: str, text: str) -> None:
                 "chat.response",
                 f"conversation_id={conversation_id} message_id={msg.id} via=slack",
             )
+            for event, findings in safety_events:
+                log_event(
+                    db,
+                    email,
+                    event,
+                    f"conversation_id={conversation_id} findings={findings} via=slack",
+                )
             db.commit()
         finally:
             db.close()

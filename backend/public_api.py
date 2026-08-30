@@ -5,8 +5,10 @@ from pydantic import BaseModel
 
 from typing import Optional
 
+from .ai_safety import SAFE_REFUSAL, screen_answer, screen_question
 from .analysis import extract_sources
 from .api_keys import key_domain, record_usage_detail, require_api_key
+from .audit import log_event_standalone
 from .identity import IdentityError, verify_user_token
 from .models import ApiKey
 from .prompts import build_system_prompt
@@ -54,6 +56,16 @@ async def v1_ask(req: AskRequest, key: ApiKey = Depends(require_api_key)):
     if len(question) > MAX_QUESTION_CHARS:
         record_usage_detail(usage_id, question, on_behalf_of, 400, user_verified)
         raise HTTPException(400, f"Question too long (max {MAX_QUESTION_CHARS} chars)")
+    # Input screen BEFORE the provider sees the question; flagged attempts are
+    # audit-logged (never silently dropped) and still answered — the system
+    # prompt and the output gate below are the enforcement layers.
+    inbound = screen_question(question)
+    if inbound.findings:
+        log_event_standalone(
+            on_behalf_of or f"api-key:{key.name}",
+            "chat.injection_flagged",
+            f"via=public_api key={key.name} findings={','.join(inbound.findings)}",
+        )
     try:
         provider = get_provider()
     except (RuntimeError, ValueError) as e:
@@ -71,5 +83,23 @@ async def v1_ask(req: AskRequest, key: ApiKey = Depends(require_api_key)):
         record_usage_detail(usage_id, question, on_behalf_of, 502, user_verified)
         raise HTTPException(502, f"Model error: {e}")
     answer = "".join(chunks)
+    # Output safety gate: never release secret-shaped content, system-prompt
+    # echoes, or injection-compliant answers to calling tools.
+    outbound = screen_answer(answer)
+    if outbound.blocked:
+        log_event_standalone(
+            on_behalf_of or f"api-key:{key.name}",
+            "chat.safety_blocked",
+            f"via=public_api key={key.name} findings={','.join(outbound.findings)}",
+        )
+        record_usage_detail(usage_id, question, on_behalf_of, 200, user_verified)
+        return {
+            "answer": SAFE_REFUSAL,
+            "sources": [],
+            "safety": {"blocked": True, "findings": outbound.findings},
+        }
+    resp = {"answer": answer, "sources": extract_sources(answer)}
+    if inbound.findings:
+        resp["safety"] = {"blocked": False, "findings": inbound.findings}
     record_usage_detail(usage_id, question, on_behalf_of, 200, user_verified)
-    return {"answer": answer, "sources": extract_sources(answer)}
+    return resp

@@ -95,6 +95,19 @@ async def draft_ticket(
         f"{'Employee' if m.role == 'user' else 'Assistant'}: {m.content}"
         for m in conv.messages[-30:]
     )
+    # Input screen: the transcript is user-controlled content going to Gemini.
+    # Flag-and-audit only — the output gate below is the enforcement layer.
+    from .ai_safety import screen_question
+
+    inbound = screen_question(transcript)
+    if inbound.findings:
+        log_event(
+            db,
+            user["username"],
+            "chat.injection_flagged",
+            f"via=ticket_draft conversation_id={conv.id} findings={','.join(inbound.findings)}",
+        )
+        db.commit()
     parts: list[str] = []
     try:
         async for chunk in provider.stream_chat(
@@ -105,6 +118,24 @@ async def draft_ticket(
         raise HTTPException(502, f"Could not draft ticket: {e}")
 
     raw = "".join(parts).strip()
+    # Output safety gate: never surface a secret-shaped or prompt-echoing
+    # draft to the employee — fall back to a plain draft they write themselves.
+    from .ai_safety import screen_answer
+
+    gate = screen_answer(raw)
+    if gate.blocked:
+        log_event(
+            db,
+            user["username"],
+            "chat.safety_blocked",
+            f"via=ticket_draft conversation_id={conv.id} findings={','.join(gate.findings)}",
+        )
+        db.commit()
+        return {
+            "title": conv.title[:200],
+            "body": "(AI draft withheld by safety checks — please describe the issue.)",
+            "domain": conv.domain,
+        }
     raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw)
     try:
         data = json.loads(raw)

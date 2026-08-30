@@ -68,7 +68,15 @@ async def _write_digest(metrics: dict) -> str:
             parts.append(chunk)
         text = "".join(parts).strip()
         if text:
-            return text[:2800]
+            # Safety gate: a digest is built from aggregate counts only, so
+            # any secret-shaped content or prompt echo means the model
+            # misbehaved — fall back to the plain metrics instead.
+            from .ai_safety import screen_answer
+
+            if screen_answer(text).blocked:
+                logger.warning("Digest text blocked by safety gate — using plain metrics")
+            else:
+                return text[:2800]
     except Exception:
         logger.exception("Digest generation via provider failed — using plain metrics")
     return "*Ask WEKA daily digest*\n" + lines

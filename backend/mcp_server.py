@@ -12,8 +12,10 @@ a full OAuth authorization-server flow when IT provisions one.
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 
+from .ai_safety import SAFE_REFUSAL, screen_answer, screen_question
 from .analysis import extract_sources
 from .api_keys import key_domain, record_usage_detail, require_mcp_token
+from .audit import log_event_standalone
 from .identity import IdentityError, verify_user_token
 from .models import ApiKey
 from . import alerts
@@ -68,7 +70,15 @@ def _rpc_error(id_, code: int, message: str, status: int = 200) -> JSONResponse:
     )
 
 
-async def _answer(question: str, domain: str = "") -> dict:
+async def _answer(question: str, domain: str = "", caller: str = "") -> dict:
+    # Input screen BEFORE the provider sees the question; flag + audit only.
+    inbound = screen_question(question)
+    if inbound.findings:
+        log_event_standalone(
+            caller or "mcp",
+            "chat.injection_flagged",
+            f"via=mcp findings={','.join(inbound.findings)}",
+        )
     provider = get_provider()
     chunks: list[str] = []
     async for chunk in provider.stream_chat(
@@ -76,6 +86,15 @@ async def _answer(question: str, domain: str = "") -> dict:
     ):
         chunks.append(chunk)
     answer = "".join(chunks)
+    # Output safety gate before anything reaches the MCP client.
+    gate = screen_answer(answer)
+    if gate.blocked:
+        log_event_standalone(
+            caller or "mcp",
+            "chat.safety_blocked",
+            f"via=mcp findings={','.join(gate.findings)}",
+        )
+        return {"content": [{"type": "text", "text": SAFE_REFUSAL}], "isError": False}
     sources = extract_sources(answer)
     text = answer
     if sources:
@@ -134,7 +153,9 @@ async def mcp_endpoint(request: Request, token: ApiKey = Depends(require_mcp_tok
             record_usage_detail(usage_id, question, on_behalf_of, 400, user_verified)
             return _rpc_error(id_, -32602, "question too long (max 4000 chars)")
         try:
-            result = await _answer(question, key_domain(token))
+            result = await _answer(
+                question, key_domain(token), caller=on_behalf_of or f"mcp-token:{token.name}"
+            )
             record_usage_detail(usage_id, question, on_behalf_of, 200, user_verified)
             return _rpc_result(id_, result)
         except (RuntimeError, ValueError) as e:

@@ -9,6 +9,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from .admin import admin_audited
+from .ai_safety import SAFE_REFUSAL, screen_answer, screen_question
 from .analysis import classify_domain, extract_sources
 from .audit import log_event
 from .db import SessionLocal, get_db
@@ -301,6 +302,18 @@ async def golden_run(user: dict = Depends(admin_audited)):
         system = build_system_prompt()
         any_error = False
         for gq in questions:
+            # Input screen: golden questions are admin-authored but still go
+            # to Gemini; injection-looking ones (often deliberate red-team
+            # cases) are flagged in the audit log, never silently dropped.
+            inbound = screen_question(gq.question)
+            if inbound.findings:
+                log_event(
+                    db,
+                    user["username"],
+                    "chat.injection_flagged",
+                    f"via=golden_run question_id={gq.id} findings={','.join(inbound.findings)}",
+                )
+                db.commit()
             answer_parts: list[str] = []
             error = ""
             try:
@@ -312,6 +325,14 @@ async def golden_run(user: dict = Depends(admin_audited)):
                 error = str(e)[:2000]
                 any_error = True
             answer = "".join(answer_parts)
+            # Safety gate: golden answers are persisted and shown to admins,
+            # so a blocked answer is stored as the refusal, recorded as a
+            # safety error, and auto-flagged — never persisted raw.
+            gate = screen_answer(answer)
+            if gate.blocked:
+                answer = SAFE_REFUSAL
+                error = f"safety_blocked: {','.join(gate.findings)}"
+                any_error = True
             sources = extract_sources(answer)
             ai_verdict, ai_reasoning = "", ""
             if answer and not error:
@@ -319,6 +340,9 @@ async def golden_run(user: dict = Depends(admin_audited)):
                     graded = await judge_answer(gq.question, gq.expected_topic, answer)
                     ai_verdict = graded["verdict"]
                     ai_reasoning = graded["reasoning"]
+                    # Judge reasoning is model output too — same gate applies.
+                    if screen_answer(ai_reasoning).blocked:
+                        ai_reasoning = "(judge reasoning withheld by safety checks)"
                 except Exception as e:  # leave ungraded rather than invent a verdict
                     ai_reasoning = f"AI grading unavailable: {str(e)[:500]}"
             db.add(

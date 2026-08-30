@@ -129,6 +129,30 @@ database if the app is ever scaled out.
 - Retention: conversations and feedback kept until deleted by the user/admin;
   audit log retained per the policy above. (To be finalized with IT.)
 
+
+## AI safety & evaluation
+
+- Deterministic safety gate (`backend/ai_safety.py`) screens every model
+  answer before release to users or Slack: secret-shaped strings,
+  system-prompt/KB-envelope echoes, and injection-compliance markers are
+  blocked and replaced with a safe refusal; inbound prompt-injection
+  attempts are flagged and audit-logged (`chat.injection_flagged`,
+  `chat.safety_blocked`).
+- Applied at every Gemini egress point: web chat stream, public
+  `/api/v1/ask`, MCP `ask_weka` tool, Slack DM assistant, the Slack daily
+  digest (falls back to plain metrics), ticket drafting (falls back to a
+  manual draft), golden-run answers (stored as refusal + auto-flagged), and
+  judge reasoning (withheld when flagged). Input screening runs before the
+  provider is invoked. Web chat streams with a 600-character holdback window
+  so a violating answer is blocked before any part of it reaches the browser.
+- Repeatable evaluation suite (`backend/safety_eval.py`): fixed adversarial
+  corpus covering prompt injection, data leakage, and incorrect-answer
+  handling. Runs deterministically in CI (`tests/test_ai_safety.py`) and
+  live against the real model via `scripts/run_safety_eval.py` before any
+  production approval or model change.
+- Findings and residual risks for the production approval record:
+  see `docs/AI_SAFETY_EVALUATION.md`.
+
 ## SDLC / governance status
 
 - Gate 0 intake form: **confirm with owner** (register via IT SW / AI Solution

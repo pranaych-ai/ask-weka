@@ -15,12 +15,16 @@ from .auth import AUTH_ENABLED, require_user
 from .auth import router as auth_router
 from .db import Base, engine, get_db, SessionLocal
 from .models import Conversation, Feedback, Message
+from .ai_safety import SAFE_REFUSAL, screen_answer, screen_question
 from .prompts import build_system_prompt
 from .providers import get_provider
 
 # How many recent messages to send to the model. Older turns are dropped for
 # the POC; summarization of older turns is a later-phase improvement.
 HISTORY_BUDGET = 30
+# Chars of model output withheld behind the safety gate while streaming; any
+# violating pattern is shorter than this, so it is caught before release.
+SAFETY_HOLDBACK = 600
 
 Base.metadata.create_all(bind=engine)
 
@@ -563,14 +567,51 @@ async def chat(req: ChatRequest, user: dict = Depends(require_user)):
         raise HTTPException(503, str(e))
     system = build_system_prompt(domain)
 
+    inbound = screen_question(req.message)
+    if inbound.findings:
+        db3 = SessionLocal()
+        try:
+            log_event(
+                db3,
+                user["username"],
+                "chat.injection_flagged",
+                f"conversation_id={conversation_id} findings={','.join(inbound.findings)}",
+            )
+            db3.commit()
+        finally:
+            db3.close()
+
+    # Streaming safety: text is released to the browser SAFETY_HOLDBACK chars
+    # behind what the model has produced, and the *entire* accumulated text is
+    # screened before every release. Any violating pattern is therefore still
+    # inside the unreleased holdback window when detected, so no part of it
+    # ever reaches the client; the stream is replaced with a safe refusal.
     async def event_stream():
         yield _sse({"conversation_id": conversation_id, "title": conversation_title})
         full_response = []
         assistant_message_id = None
+        blocked_findings: list[str] = []
+        released = 0
         try:
             async for chunk in provider.stream_chat(system, history):
                 full_response.append(chunk)
-                yield _sse({"delta": chunk})
+                text = "".join(full_response)
+                gate = screen_answer(text)
+                if gate.blocked:
+                    blocked_findings = gate.findings
+                    full_response = [SAFE_REFUSAL]
+                    yield _sse({"error": SAFE_REFUSAL, "safety_blocked": True})
+                    break
+                safe_len = len(text) - SAFETY_HOLDBACK
+                if safe_len > released:
+                    yield _sse({"delta": text[released:safe_len]})
+                    released = safe_len
+            else:
+                # Stream ended cleanly: the complete text passed the gate on
+                # the final chunk, so the holdback window can be released.
+                text = "".join(full_response)
+                if len(text) > released:
+                    yield _sse({"delta": text[released:]})
         except Exception as e:  # surface provider errors to the UI
             alerts.record_ai_failure(type(e).__name__)
             yield _sse({"error": str(e)})
@@ -593,6 +634,14 @@ async def chat(req: ChatRequest, user: dict = Depends(require_user)):
                         "chat.response",
                         f"conversation_id={conversation_id} message_id={msg.id}",
                     )
+                    if blocked_findings:
+                        log_event(
+                            db2,
+                            user["username"],
+                            "chat.safety_blocked",
+                            f"conversation_id={conversation_id} "
+                            f"findings={','.join(blocked_findings)}",
+                        )
                     db2.commit()
                     assistant_message_id = msg.id
                 finally:
