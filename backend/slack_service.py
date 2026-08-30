@@ -64,6 +64,12 @@ FEATURES: dict[str, dict] = {
         "admin_only": True,
         "default": True,
     },
+    "security_alerts": {
+        "label": "Security & availability alerts",
+        "description": "Post service failures, repeated sign-in failures, and admin-rights changes to the notification channel.",
+        "user_optin": False,
+        "default": True,
+    },
     "usage_digest": {
         "label": "Usage digest",
         "description": "Scheduled AI-written usage digest posted to the notification channel.",

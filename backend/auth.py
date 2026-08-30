@@ -21,6 +21,7 @@ from authlib.integrations.starlette_client import OAuth, OAuthError
 from fastapi import APIRouter, HTTPException, Request
 from starlette.responses import RedirectResponse
 
+from .alerts import record_admin_change, record_auth_failure
 from .audit import log_event_standalone
 
 OKTA_ISSUER = os.environ.get("OKTA_ISSUER", "").rstrip("/")
@@ -101,6 +102,31 @@ def require_admin(request: Request) -> dict:
     return user
 
 
+def _previous_admin_state(username: str) -> bool | None:
+    """Admin flag recorded at this account's most recent successful login,
+    or None for a first-time sign-in. Read from the audit trail so the
+    comparison survives restarts. Never raises into the login flow."""
+    try:
+        from .db import SessionLocal
+        from .models import ActivityLog
+
+        db = SessionLocal()
+        try:
+            row = (
+                db.query(ActivityLog)
+                .filter(ActivityLog.username == username, ActivityLog.action == "login")
+                .order_by(ActivityLog.created_at.desc())
+                .first()
+            )
+        finally:
+            db.close()
+        if not row:
+            return None
+        return "admin=True" in (row.detail or "")
+    except Exception:
+        return None
+
+
 @router.get("/auth/login")
 async def login(request: Request):
     if not AUTH_ENABLED:
@@ -119,15 +145,32 @@ async def auth_callback(request: Request):
     try:
         token = await oauth.okta.authorize_access_token(request)
     except OAuthError as e:
+        # Record the failure (audit + repeated-failure alerting). The error
+        # code is safe metadata; no credentials or tokens are involved.
+        log_event_standalone("unknown", "login.failed", f"reason={e.error}")
+        record_auth_failure(str(e.error or ""))
         raise HTTPException(401, f"Okta sign-in failed: {e.error}")
     claims = token.get("userinfo") or {}
     now = time.time()
     groups = claims.get("groups") or []
     username = claims.get("preferred_username") or claims.get("email") or "unknown"
-    is_admin = bool(ADMIN_GROUPS & {str(g) for g in groups}) or (
+    via_group = bool(ADMIN_GROUPS & {str(g) for g in groups})
+    via_bootstrap = (
         username.lower() in ADMIN_USERS
         or (claims.get("email", "") or "").lower() in ADMIN_USERS
     )
+    is_admin = via_group or via_bootstrap
+
+    # Detect unexpected admin-rights changes: compare with this account's
+    # previous recorded sign-in and alert owners when the outcome differs.
+    prev_admin = _previous_admin_state(username)
+    if prev_admin is not None and prev_admin != is_admin:
+        record_admin_change(
+            username,
+            is_admin,
+            "Okta group" if via_group else ("OKTA_ADMIN_USERS bootstrap list" if via_bootstrap else "none"),
+        )
+
     request.session["user"] = {
         "username": username,
         "name": claims.get("name", ""),

@@ -298,6 +298,26 @@ async def _stop_slack_scheduler():
     await slack_scheduler.stop()
 
 
+from . import alerts  # noqa: E402
+
+
+@app.middleware("http")
+async def _server_error_alerting(request: Request, call_next):
+    """Count unhandled server failures and alert owners on error spikes.
+
+    Only the route path is recorded — never query strings, headers, or
+    bodies, which could carry content or tokens.
+    """
+    try:
+        response = await call_next(request)
+    except Exception:
+        alerts.record_server_error(request.url.path)
+        raise
+    if response.status_code >= 500:
+        alerts.record_server_error(request.url.path)
+    return response
+
+
 @app.get("/api/healthz")
 def healthz():
     """Unauthenticated liveness probe for deployment health checks."""
@@ -552,6 +572,7 @@ async def chat(req: ChatRequest, user: dict = Depends(require_user)):
                 full_response.append(chunk)
                 yield _sse({"delta": chunk})
         except Exception as e:  # surface provider errors to the UI
+            alerts.record_ai_failure(type(e).__name__)
             yield _sse({"error": str(e)})
         finally:
             if full_response:

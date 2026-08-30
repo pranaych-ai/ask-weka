@@ -16,6 +16,7 @@ from .analysis import extract_sources
 from .api_keys import key_domain, record_usage_detail, require_mcp_token
 from .identity import IdentityError, verify_user_token
 from .models import ApiKey
+from . import alerts
 from .prompts import build_system_prompt
 from .providers import get_provider
 
@@ -138,12 +139,16 @@ async def mcp_endpoint(request: Request, token: ApiKey = Depends(require_mcp_tok
             return _rpc_result(id_, result)
         except (RuntimeError, ValueError) as e:
             record_usage_detail(usage_id, question, on_behalf_of, 503, user_verified)
+            # JSON-RPC failures return HTTP 200, so alert here explicitly —
+            # the 5xx middleware never sees this failure.
+            alerts.record_ai_failure(f"MCP: {type(e).__name__}")
             return _rpc_result(id_, {
                 "content": [{"type": "text", "text": f"Model unavailable: {e}"}],
                 "isError": True,
             })
         except Exception as e:
             record_usage_detail(usage_id, question, on_behalf_of, 502, user_verified)
+            alerts.record_ai_failure(f"MCP: {type(e).__name__}")
             return _rpc_result(id_, {
                 "content": [{"type": "text", "text": f"Error answering: {e}"}],
                 "isError": True,

@@ -18,6 +18,7 @@ from collections import OrderedDict
 
 from fastapi import APIRouter, Request, Response
 
+from . import alerts
 from .audit import log_event
 from .db import SessionLocal
 from .models import Conversation, Message, SlackChannel
@@ -190,8 +191,10 @@ async def _answer_dm_inner(channel: str, slack_user: str, text: str) -> None:
             db.close()
 
         await svc.notify_direct_channel("dm_chat", channel, answer[:39000])
-    except Exception:
+    except Exception as e:
         logger.exception("Slack DM handling failed")
+        # Slack DM failures never surface as 5xx responses; alert explicitly.
+        alerts.record_ai_failure(f"Slack DM: {type(e).__name__}")
         try:
             await svc.notify_direct_channel(
                 "dm_chat",

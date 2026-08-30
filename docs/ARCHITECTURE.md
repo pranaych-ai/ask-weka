@@ -73,6 +73,45 @@ Internal AI assistant for WEKA employees (HR/IT questions over the internal know
   recipient already has access to (their own ticket, admin-only run summaries,
   aggregate usage counts).
 
+## Alerting & incident response
+
+Owner/admin alerts are posted to the configured Slack notification channel
+through the central delivery gate (feature **"Security & availability
+alerts"**, enabled by default once the integration is verified). Every alert
+is also written to the audit log (`alert.raised`) so nothing is lost when
+Slack is disabled or misconfigured (`alert.delivery_skipped` records that).
+
+**Coverage** (`backend/alerts.py`):
+
+| Alert | Trigger | Severity |
+|-------|---------|----------|
+| Application errors spiking | ≥ 5 unhandled 5xx responses within 5 min (HTTP middleware) | CRITICAL |
+| AI provider failing | AI answering fails on any interface — web chat (SSE), MCP tool calls (JSON-RPC errors travel over HTTP 200), or Slack DM (background worker) | WARNING |
+| Repeated sign-in failures | ≥ 5 failed Okta sign-ins within 10 min | WARNING |
+| Admin rights granted | An account signs in with admin rights it did not have at its previous sign-in | CRITICAL |
+| Admin rights revoked | The reverse transition | INFO |
+
+**Content rules**: alerts never contain secrets, tokens, KB content, question
+text, or request bodies. Volume alerts carry aggregate counts only; the
+admin-rights alert names the account (required to act) and the source of the
+grant (Okta group vs. `OKTA_ADMIN_USERS` bootstrap list).
+
+**Deduplication**: each alert key posts at most once per 30 minutes;
+suppressed repeats are counted and reported in the next post
+(`alert.deduplicated` audit rows record every suppression).
+
+**Response expectations**:
+- CRITICAL — acknowledge within 1 business hour. For error spikes, check the
+  deployment logs; for an unexpected admin grant, verify the Okta group
+  change with IT and revoke if unapproved.
+- WARNING — review same business day. Repeated sign-in failures: check the
+  audit log (`login.failed`) and the Okta system log for the source.
+- INFO — no action required; confirm the change was expected.
+
+Known limitation (POC): dedup windows and failure counters are in-memory and
+reset on restart — acceptable for the single-instance deployment; move to the
+database if the app is ever scaled out.
+
 ## Audit trail
 
 - `activity_log` table records who/what/when: logins, logouts, feedback
