@@ -319,6 +319,7 @@ def test_verify_pins_app_id_or_fails(monkeypatch):
                     "user": "askweka", "bot_id": "B123"}
         if method == "bots.info":
             assert (payload or {}).get("bot") == "B123"
+            assert (payload or {}).get("team_id") == "T1"
             return {"ok": True, "bot": {"id": "B123", "app_id": "APINNED"}}
         return {"ok": False, "error": "unexpected_method"}
 
@@ -344,6 +345,70 @@ def test_verify_pins_app_id_or_fails(monkeypatch):
         assert row.verified is False
         assert row.app_id == ""  # stale pin cleared on failed verification
         assert "app ID" in row.last_verify_error
+        db.rollback()
+    finally:
+        db.close()
+
+
+def test_verify_resolves_single_enterprise_grid_workspace(monkeypatch):
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
+    monkeypatch.setenv("SLACK_SIGNING_SECRET", SECRET)
+    import asyncio as _a
+
+    async def enterprise_api(method, payload=None, **kw):
+        if method == "auth.test":
+            return {
+                "ok": True,
+                "team_id": "EORG",
+                "is_enterprise_install": True,
+                "user_id": "UBOT",
+                "bot_id": "BBOT",
+                "user": "askweka",
+            }
+        if method == "auth.teams.list":
+            return {"ok": True, "teams": [{"id": "TWEKA", "name": "WEKA"}]}
+        if method == "bots.info":
+            assert payload == {"bot": "BBOT", "team_id": "TWEKA"}
+            return {"ok": True, "bot": {"app_id": "AWEKA"}}
+        return {"ok": False, "error": "unexpected_method"}
+
+    monkeypatch.setattr(svc, "slack_api", enterprise_api)
+    db = SessionLocal()
+    try:
+        row = _a.run(svc.verify_connection(db))
+        assert row.verified is True
+        assert row.team_id == "TWEKA"
+        assert row.team_name == "WEKA"
+        assert row.app_id == "AWEKA"
+        db.rollback()
+    finally:
+        db.close()
+
+
+def test_verify_rejects_enterprise_grid_token_without_workspace(monkeypatch):
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
+    monkeypatch.setenv("SLACK_SIGNING_SECRET", SECRET)
+    import asyncio as _a
+
+    async def enterprise_api(method, payload=None, **kw):
+        if method == "auth.test":
+            return {
+                "ok": True,
+                "team_id": "EORG",
+                "is_enterprise_install": True,
+                "user_id": "UBOT",
+                "bot_id": "BBOT",
+            }
+        if method == "auth.teams.list":
+            return {"ok": True, "teams": []}
+        return {"ok": False, "error": "unexpected_method"}
+
+    monkeypatch.setattr(svc, "slack_api", enterprise_api)
+    db = SessionLocal()
+    try:
+        row = _a.run(svc.verify_connection(db))
+        assert row.verified is False
+        assert "not approved for any workspace" in row.last_verify_error
         db.rollback()
     finally:
         db.close()

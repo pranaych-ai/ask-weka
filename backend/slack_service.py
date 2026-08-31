@@ -246,26 +246,73 @@ async def verify_connection(db: Session) -> SlackIntegration:
         row.last_verify_error = str(data.get("error", "unknown_error"))[:300]
         return row
     bot_user_id = str(data.get("user_id", ""))[:30]
+    team_id = str(data.get("team_id") or "")
+    team_name = str(data.get("team") or "")
+    workspace_url = str(data.get("url") or "")
+
+    # Org-wide Enterprise Grid tokens are not tied to one workspace in
+    # auth.test. Resolve the approved workspace before looking up the bot.
+    # The integration remains deliberately single-workspace: accepting an
+    # arbitrary workspace from a multi-workspace org token would weaken the
+    # app-ID/workspace pin that protects inbound callbacks.
+    if team_id.startswith("E") or data.get("is_enterprise_install"):
+        approved = await slack_api("auth.teams.list")
+        teams = approved.get("teams") if approved.get("ok") else None
+        teams = teams if isinstance(teams, list) else []
+        if not teams:
+            row.verified = False
+            row.app_id = ""
+            row.last_verify_error = (
+                "This Enterprise Grid app is not approved for any workspace — "
+                "approve/install it in the intended WEKA workspace and verify again"
+            )
+            return row
+        if len(teams) != 1:
+            row.verified = False
+            row.app_id = ""
+            row.last_verify_error = (
+                "This Enterprise Grid token is approved for multiple workspaces — "
+                "use a workspace-specific bot installation for Ask WEKA"
+            )
+            return row
+        selected = teams[0] if isinstance(teams[0], dict) else {}
+        team_id = str(selected.get("id") or "")
+        team_name = str(selected.get("name") or team_name)
+        workspace_url = str(selected.get("url") or workspace_url)
+        if not team_id.startswith("T"):
+            row.verified = False
+            row.app_id = ""
+            row.last_verify_error = "Slack returned an invalid approved workspace ID"
+            return row
 
     # Pin the Slack app ID as part of verification. This is mandatory:
     # inbound event callbacks are rejected until an app ID is pinned, so a
     # verification that cannot establish the app identity fails closed.
     # Primary (documented) path: auth.test's bot_id -> bots.info -> bot.app_id.
     # Fallback: the bot user's profile (api_app_id / bot_id) via users.info.
-    app_id = ""
+    app_id = str(data.get("app_id") or "")
     try:
         bot_id = str(data.get("bot_id") or "")
         if bot_id:
-            binfo = await slack_api("bots.info", {"bot": bot_id})
+            binfo = await slack_api(
+                "bots.info",
+                {"bot": bot_id, "team_id": team_id},
+            )
             if binfo.get("ok"):
                 app_id = str((binfo.get("bot") or {}).get("app_id") or "")
         if not app_id:
-            info = await slack_api("users.info", {"user": bot_user_id})
+            info = await slack_api(
+                "users.info",
+                {"user": bot_user_id, "team_id": team_id},
+            )
             profile = (info.get("user") or {}).get("profile") or {}
             if info.get("ok"):
                 app_id = str(profile.get("api_app_id") or "")
                 if not app_id and profile.get("bot_id"):
-                    binfo = await slack_api("bots.info", {"bot": profile["bot_id"]})
+                    binfo = await slack_api(
+                        "bots.info",
+                        {"bot": profile["bot_id"], "team_id": team_id},
+                    )
                     if binfo.get("ok"):
                         app_id = str((binfo.get("bot") or {}).get("app_id") or "")
     except Exception:
@@ -281,9 +328,9 @@ async def verify_connection(db: Session) -> SlackIntegration:
 
     row.verified = True
     row.last_verify_error = ""
-    row.team_id = str(data.get("team_id", ""))[:30]
-    row.team_name = str(data.get("team", ""))[:200]
-    row.workspace_url = str(data.get("url", ""))[:300]
+    row.team_id = team_id[:30]
+    row.team_name = team_name[:200]
+    row.workspace_url = workspace_url[:300]
     row.bot_user_id = bot_user_id
     row.bot_name = str(data.get("user", ""))[:200]
     row.app_id = app_id[:30]
