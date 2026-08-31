@@ -53,25 +53,7 @@ FEATURES: dict[str, dict] = {
     },
     "slash_in_channel": {
         "label": "Slash answers visible in channel",
-        "description": "Allow an asker to publish an ephemeral slash answer with the reviewed Post to channel action.",
-        "user_optin": False,
-        "default": False,
-    },
-    "interactivity": {
-        "label": "Interactive answer actions",
-        "description": "Enable feedback, reviewed channel posting, and ticket-review modals on Slack answers.",
-        "user_optin": False,
-        "default": False,
-    },
-    "thread_summaries": {
-        "label": "Thread catch-up and summaries",
-        "description": "Let opted-in employees summarize the current thread or up to 24 hours of the current channel.",
-        "user_optin": True,
-        "default": False,
-    },
-    "link_unfurl": {
-        "label": "Ask WEKA link previews",
-        "description": "Show metadata-only previews for links on this Ask WEKA deployment domain.",
+        "description": "Post /askweka answers to the whole channel instead of only to the asker (ephemeral).",
         "user_optin": False,
         "default": False,
     },
@@ -112,7 +94,33 @@ FEATURES: dict[str, dict] = {
         "user_optin": False,
         "default": False,
     },
+    "answer_actions": {
+        "label": "Answer action buttons",
+        "description": "Attach feedback, Post to channel, and Create ticket buttons to Slack answers.",
+        "user_optin": False,
+        "default": True,
+    },
+    "thread_summaries": {
+        "label": "Thread & channel summaries",
+        "description": "Opted-in employees can @mention the bot with 'catch me up' / 'summarize' for a bounded, never-stored summary of the current thread or channel.",
+        "user_optin": True,
+        "default": False,
+    },
+    "app_home": {
+        "label": "App Home tab",
+        "description": "Publish a personal Home tab with feature availability, opt-in status, and Ask WEKA links.",
+        "user_optin": False,
+        "default": False,
+    },
+    "link_unfurls": {
+        "label": "Ask WEKA link unfurls",
+        "description": "Metadata-only unfurls for this deployment's own links — no conversation content is ever fetched or shown.",
+        "user_optin": False,
+        "default": False,
+    },
 }
+
+COMMAND_DOMAINS = ("", "IT", "HR")
 
 DEFAULT_COMMANDS = [
     {
@@ -172,14 +180,14 @@ def parse_commands(row: SlackIntegration) -> list[dict]:
     out = []
     for c in data:
         if isinstance(c, dict) and str(c.get("command", "")).startswith("/"):
+            domain = str(c.get("domain", "")).strip().upper()
             out.append(
                 {
                     "command": str(c.get("command", ""))[:32],
                     "description": str(c.get("description", ""))[:100],
                     "usage_hint": str(c.get("usage_hint", ""))[:100],
-                    "domain": str(c.get("domain", ""))[:20]
-                    if str(c.get("domain", "")) in ("", "IT", "HR") else "",
-                    "instructions": str(c.get("instructions", ""))[:2000],
+                    "domain": domain if domain in COMMAND_DOMAINS else "",
+                    "instructions": str(c.get("instructions", ""))[:1000],
                 }
             )
     return out
@@ -428,25 +436,66 @@ async def respond_to_command(
         return False
 
 
+# ---------- Signed action references ----------
+# Interactive button values are server-signed references (never content, never
+# identity): kind:ref:hmac. The clicking employee is verified via users.info
+# and ownership is re-checked server-side before any effect.
+
+
+def _action_key() -> bytes:
+    import os as _os
+
+    return (_os.environ.get("SESSION_SECRET", "") or "dev-only-insecure").encode()
+
+
+def sign_action(kind: str, ref: str) -> str:
+    import hashlib as _hashlib
+    import hmac as _hmac
+
+    mac = _hmac.new(_action_key(), f"slack-action:{kind}:{ref}".encode(), _hashlib.sha256)
+    return f"{kind}:{ref}:{mac.hexdigest()[:32]}"
+
+
+def parse_action(value: str) -> tuple[str, str] | None:
+    """Returns (kind, ref) only when the HMAC verifies; None otherwise."""
+    import hashlib as _hashlib
+    import hmac as _hmac
+
+    parts = (value or "").split(":")
+    if len(parts) != 3:
+        return None
+    kind, ref, mac = parts
+    expected = _hmac.new(
+        _action_key(), f"slack-action:{kind}:{ref}".encode(), _hashlib.sha256
+    ).hexdigest()[:32]
+    if not _hmac.compare_digest(expected, mac):
+        return None
+    return kind, ref
+
+
+def feature_enabled(feature: str) -> bool:
+    """Convenience read of a single admin feature flag (own session)."""
+    db = SessionLocal()
+    try:
+        row = get_integration(db)
+        ok = bool(
+            creds_configured() and row.enabled and row.verified
+            and parse_features(row).get(feature)
+        )
+        db.commit()
+        return ok
+    except Exception:
+        logger.exception("Slack feature flag read failed — treating as disabled")
+        return False
+    finally:
+        db.close()
+
+
 # ---------- Block Kit helpers ----------
 
 
 def text_blocks(text: str) -> list[dict]:
     return [{"type": "section", "text": {"type": "mrkdwn", "text": text[:2900]}}]
-
-
-def notification_blocks(text: str) -> list[dict]:
-    blocks = text_blocks(text)
-    blocks.append({
-        "type": "actions",
-        "elements": [{
-            "type": "button",
-            "text": {"type": "plain_text", "text": "Open in Ask WEKA"},
-            "url": public_base_url(),
-            "action_id": "askweka_open",
-        }],
-    })
-    return blocks
 
 
 def to_slack_mrkdwn(text: str) -> str:
@@ -470,57 +519,61 @@ def to_slack_mrkdwn(text: str) -> str:
 def answer_blocks(
     text: str,
     message_id: str = "",
-    *,
-    allow_post: bool = False,
-    allow_ticket: bool = False,
+    conversation_id: str = "",
+    offer_post: bool = False,
 ) -> list[dict]:
-    """Slack-formatted answer sections and authorized server-side actions.
+    """Slack-formatted answer sections plus a button back to Ask WEKA.
 
-    Action values contain only the stored assistant-message id. Question,
-    answer, owner, and conversation are always looked up server-side.
-    """
+    When ids are given AND the admin enabled answer actions, feedback
+    (thumbs), Create ticket, and optionally Post to channel buttons are
+    attached. Button values are signed references only — never content."""
     mrkdwn = to_slack_mrkdwn(text)
     blocks: list[dict] = [
         {"type": "section", "text": {"type": "mrkdwn", "text": chunk}}
         for chunk in (mrkdwn[i : i + 2900] for i in range(0, min(len(mrkdwn), 2900 * 4), 2900))
         if chunk
     ] or text_blocks(mrkdwn)
-    elements = [{
-        "type": "button",
-        "text": {"type": "plain_text", "text": "Open in Ask WEKA"},
-        "url": public_base_url(),
-        "action_id": "askweka_open",
-    }]
-    if message_id:
-        elements.extend([
+    elements: list[dict] = []
+    if message_id and feature_enabled("answer_actions"):
+        elements = [
             {
                 "type": "button",
-                "text": {"type": "plain_text", "text": "👍"},
-                "action_id": "askweka_feedback_up",
-                "value": message_id,
+                "text": {"type": "plain_text", "text": ":thumbsup:"},
+                "action_id": "fb_up",
+                "value": sign_action("m", message_id),
             },
             {
                 "type": "button",
-                "text": {"type": "plain_text", "text": "👎"},
-                "action_id": "askweka_feedback_down",
-                "value": message_id,
+                "text": {"type": "plain_text", "text": ":thumbsdown:"},
+                "action_id": "fb_down",
+                "value": sign_action("m", message_id),
             },
-        ])
-        if allow_post:
-            elements.append({
-                "type": "button",
-                "text": {"type": "plain_text", "text": "Post to channel"},
-                "action_id": "askweka_post_channel",
-                "value": message_id,
-            })
-        if allow_ticket:
-            elements.append({
-                "type": "button",
-                "text": {"type": "plain_text", "text": "Create ticket"},
-                "style": "primary",
-                "action_id": "askweka_ticket_review",
-                "value": message_id,
-            })
+        ]
+        if offer_post:
+            elements.append(
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "Post to channel"},
+                    "action_id": "post_channel",
+                    "value": sign_action("m", message_id),
+                }
+            )
+        if conversation_id:
+            elements.append(
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "Create ticket"},
+                    "action_id": "create_ticket",
+                    "value": sign_action("c", conversation_id),
+                }
+            )
+    elements.append(
+        {
+            "type": "button",
+            "text": {"type": "plain_text", "text": "Open Ask WEKA"},
+            "url": public_base_url(),
+        }
+    )
     blocks.append({"type": "actions", "elements": elements})
     return blocks
 
@@ -558,7 +611,7 @@ async def notify_user(feature: str, username: str, text: str, blocks: list[dict]
             {
                 "channel": channel,
                 "text": text[:3000],
-                "blocks": blocks or notification_blocks(text),
+                "blocks": blocks or text_blocks(text),
                 "unfurl_links": False,
             },
         )
@@ -650,64 +703,9 @@ async def notify_direct_channel(
         return False
 
 
-async def post_interactive_answer(
-    channel: str,
-    text: str,
-    assistant_message_id: str,
+async def send_inbound_notice(
+    channel: str, text: str, blocks: list[dict] | None = None, thread_ts: str = ""
 ) -> bool:
-    """Publish a private slash answer only while every public-post gate holds.
-
-    All three flags are re-read in one DB session immediately before the API
-    call. This fails closed if an admin disables the integration,
-    interactivity, slash commands, or channel posting after answer generation
-    but before the employee clicks the button.
-    """
-    try:
-        db = SessionLocal()
-        try:
-            checks = [
-                check_gate(db, feature)
-                for feature in (
-                    "interactivity",
-                    "slash_commands",
-                    "slash_in_channel",
-                )
-            ]
-            db.commit()
-        finally:
-            db.close()
-        failed = next((reason for ok, reason in checks if not ok), "")
-        if failed:
-            _audit_skip("slash_in_channel", failed, None)
-            return False
-        data = await slack_api(
-            "chat.postMessage",
-            {
-                "channel": channel,
-                "text": text[:3000],
-                "blocks": answer_blocks(text[:11000], assistant_message_id),
-                "unfurl_links": False,
-            },
-        )
-        if data.get("ok"):
-            log_event_standalone(
-                "system",
-                "slack.notify",
-                "feature=slash_in_channel kind=interactive",
-            )
-            return True
-        _audit_skip(
-            "slash_in_channel",
-            f"send_failed:{data.get('error', 'unknown')}",
-            None,
-        )
-        return False
-    except Exception:
-        logger.exception("Slack interactive channel post failed")
-        return False
-
-
-async def send_inbound_notice(channel: str, text: str, blocks: list[dict] | None = None) -> bool:
     """Post a service notice to a channel gated on the master switch only.
 
     Used for the once-daily "DM chat is disabled" pointer — by definition
@@ -731,6 +729,7 @@ async def send_inbound_notice(channel: str, text: str, blocks: list[dict] | None
                 "text": text[:3000],
                 "blocks": blocks or text_blocks(text),
                 "unfurl_links": False,
+                **({"thread_ts": thread_ts} if thread_ts else {}),
             },
         )
         if data.get("ok"):
@@ -869,11 +868,6 @@ def generate_manifest(db: Session) -> dict:
         },
         "features": {
             "bot_user": {"display_name": "Ask WEKA", "always_online": True},
-            "app_home": {
-                "home_tab_enabled": True,
-                "messages_tab_enabled": True,
-                "messages_tab_read_only_enabled": False,
-            },
         },
         "oauth_config": {
             "scopes": {
@@ -895,33 +889,43 @@ def generate_manifest(db: Session) -> dict:
             },
             "interactivity": {
                 "is_enabled": True,
-                "request_url": f"{base}/api/slack/interactivity",
+                "request_url": f"{base}/api/slack/interactions",
             },
             "org_deploy_enabled": False,
             "socket_mode_enabled": False,
             "token_rotation_enabled": False,
         },
     }
-    if features.get("dm_chat") or features.get("channel_mentions"):
-        # The eyes reaction while an answer is being generated.
+    if (
+        features.get("dm_chat")
+        or features.get("channel_mentions")
+        or features.get("thread_summaries")
+    ):
+        # The eyes reaction while an answer/summary is being generated.
         manifest["oauth_config"]["scopes"]["bot"].append("reactions:write")
-    if features.get("channel_mentions"):
+    if features.get("channel_mentions") or features.get("thread_summaries"):
         manifest["oauth_config"]["scopes"]["bot"].append("app_mentions:read")
         manifest["settings"]["event_subscriptions"]["bot_events"].append("app_mention")
-    if features.get("dm_chat"):
-        manifest["settings"]["event_subscriptions"]["bot_events"].append("app_home_opened")
-    if features.get("link_unfurl"):
-        manifest["oauth_config"]["scopes"]["bot"].extend(["links:read", "links:write"])
-        manifest["settings"]["event_subscriptions"]["bot_events"].append("link_shared")
-        from urllib.parse import urlparse
-
-        domain = urlparse(base).hostname
-        if domain:
-            manifest["settings"]["event_subscriptions"]["link_shared_domains"] = [domain]
     if features.get("thread_summaries"):
-        manifest["oauth_config"]["scopes"]["bot"].extend(
-            ["channels:history", "groups:history", "mpim:history"]
-        )
+        # Read-only, bounded catch-up of the current channel/thread — the bot
+        # can only read channels it was explicitly invited to.
+        manifest["oauth_config"]["scopes"]["bot"] += [
+            "channels:history",
+            "groups:history",
+        ]
+    if features.get("app_home"):
+        manifest["features"]["app_home"] = {
+            "home_tab_enabled": True,
+            "messages_tab_enabled": True,
+            "messages_tab_read_only_enabled": False,
+        }
+        manifest["settings"]["event_subscriptions"]["bot_events"].append("app_home_opened")
+    if features.get("link_unfurls"):
+        manifest["oauth_config"]["scopes"]["bot"] += ["links:read", "links:write"]
+        manifest["settings"]["event_subscriptions"]["bot_events"].append("link_shared")
+        host = public_base_url().split("//", 1)[-1].split("/", 1)[0]
+        if host and not host.startswith("<"):
+            manifest["settings"]["event_subscriptions"]["unfurl_domains"] = [host]
     if commands and features.get("slash_commands"):
         manifest["oauth_config"]["scopes"]["bot"].append("commands")
         manifest["features"]["slash_commands"] = [

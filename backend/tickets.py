@@ -70,15 +70,10 @@ Additional context: <environment, error messages, anything else useful; omit if 
 Never invent steps that are not in the transcript. Do not include employee names."""
 
 
-@router.post("/draft")
-async def draft_ticket(
-    req: ConversationRef,
-    db: Session = Depends(get_db),
-    user: dict = Depends(require_user),
-):
-    """AI-drafts a ticket from the conversation. Nothing is stored — the
-    employee reviews, edits, and must explicitly approve before filing."""
-    conv = _owned_conversation(db, req.conversation_id, user["username"])
+async def draft_ticket_content(db: Session, conv: Conversation, username: str) -> dict:
+    """AI-drafts a ticket from an (already ownership-checked) conversation.
+    Nothing is stored — the employee reviews, edits, and must explicitly
+    approve before filing. Shared by the web endpoint and Slack's modal."""
     if conv.resolution == "ticket":
         raise HTTPException(400, "A ticket was already created for this conversation")
     if not conv.messages:
@@ -103,7 +98,7 @@ async def draft_ticket(
     if inbound.findings:
         log_event(
             db,
-            user["username"],
+            username,
             "chat.injection_flagged",
             f"via=ticket_draft conversation_id={conv.id} findings={','.join(inbound.findings)}",
         )
@@ -126,7 +121,7 @@ async def draft_ticket(
     if gate.blocked:
         log_event(
             db,
-            user["username"],
+            username,
             "chat.safety_blocked",
             f"via=ticket_draft conversation_id={conv.id} findings={','.join(gate.findings)}",
         )
@@ -148,6 +143,16 @@ async def draft_ticket(
     if not title:
         title = conv.title[:200]
     return {"title": title, "body": body, "domain": conv.domain}
+
+
+@router.post("/draft")
+async def draft_ticket(
+    req: ConversationRef,
+    db: Session = Depends(get_db),
+    user: dict = Depends(require_user),
+):
+    conv = _owned_conversation(db, req.conversation_id, user["username"])
+    return await draft_ticket_content(db, conv, user["username"])
 
 
 class TicketCreate(BaseModel):
@@ -172,28 +177,27 @@ def _ticket_out(t: Ticket) -> dict:
     }
 
 
-@router.post("")
-async def create_ticket(
-    req: TicketCreate,
-    db: Session = Depends(get_db),
-    user: dict = Depends(require_user),
-):
-    """Files the ticket — only ever called after the employee approved the
-    (editable) draft in the review dialog. When the employee has connected
-    Jira (per-user Okta-backed SSO), the ticket is also filed in Jira AS
-    them, routed to the project mapped for the conversation's team."""
-    title = req.title.strip()
-    body = req.body.strip()
+async def file_ticket(
+    db: Session, username: str, conversation_id: str, title: str, body: str
+) -> Ticket:
+    """Core solve-first filing flow, shared by the web endpoint and Slack's
+    review/approve modal. Only ever called after the employee approved the
+    (editable) draft. When the employee has connected Jira (per-user
+    Okta-backed SSO), the ticket is also filed in Jira AS them, routed to the
+    project mapped for the conversation's team. Raises HTTPException on any
+    validation/authorization failure; commits on success."""
+    title = title.strip()
+    body = body.strip()
     if not title:
         raise HTTPException(400, "Title required")
     if len(title) > 200 or len(body) > 10000:
         raise HTTPException(400, "Title or body too long")
-    conv = _owned_conversation(db, req.conversation_id, user["username"])
+    conv = _owned_conversation(db, conversation_id, username)
     existing = db.query(Ticket).filter(Ticket.conversation_id == conv.id).first()
     if existing:
         raise HTTPException(400, "A ticket already exists for this conversation")
 
-    acct = db.get(JiraAccount, user["username"])
+    acct = db.get(JiraAccount, username)
     project = ""
     if acct:
         project = project_for_domain(db, conv.domain)
@@ -209,7 +213,7 @@ async def create_ticket(
     # approvals from filing duplicate Jira issues.
     t = Ticket(
         conversation_id=conv.id,
-        username=user["username"],
+        username=username,
         domain=conv.domain,
         title=title,
         body=body,
@@ -240,7 +244,7 @@ async def create_ticket(
             raise
     log_event(
         db,
-        user["username"],
+        username,
         "ticket.create",
         f"id={t.id} conversation_id={conv.id}" + (f" jira={t.jira_key}" if t.jira_key else ""),
     )
@@ -257,10 +261,19 @@ async def create_ticket(
         lines.append(f"• Jira: <{t.jira_url}|{t.jira_key}>")
     lines.append(f"• Ask WEKA: <{_slack.public_base_url()}/|open your conversations>")
     _asyncio.get_running_loop().create_task(
-        _slack.notify_user(
-            "ticket_notifications", user["username"], "\n".join(lines)
-        )
+        _slack.notify_user("ticket_notifications", username, "\n".join(lines))
     )
+    return t
+
+
+@router.post("")
+async def create_ticket(
+    req: TicketCreate,
+    db: Session = Depends(get_db),
+    user: dict = Depends(require_user),
+):
+    """Web approval endpoint — thin wrapper over the shared filing core."""
+    t = await file_ticket(db, user["username"], req.conversation_id, req.title, req.body)
     return _ticket_out(t)
 
 

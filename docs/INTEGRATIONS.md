@@ -93,29 +93,60 @@ Outbound domain: `https://slack.com` (Web API) — the only Slack egress.
 
 - **Setup**: admin portal → Slack tab generates the app manifest
   (deployment-aware URLs for `/api/slack/events`, `/api/slack/commands`,
-  `/api/slack/interactivity`; `/api/slack/interactions` remains a compatibility
-  alias). An admin creates the app from the manifest at
+  `/api/slack/interactions`). An admin creates the app from the manifest at
   api.slack.com, installs it, and puts the bot token + signing secret into
   Replit Secrets — credentials never pass through the app's API or UI.
 - **Verification**: server-side `auth.test`; only non-secret workspace/bot
   metadata and status are stored.
-- **Inbound**: all Slack endpoints verify the `v0` HMAC signature and a 5-min
-  replay window; event callbacks whose `api_app_id` conflicts with the app ID
-  captured at verification time are rejected. DM chat and channel mentions
-  are independently feature-gated by the admin. Both resolve the sender's
-  WEKA email via `users.info` (domain-allowlisted) and reuse the normal chat
-  pipeline, AI safety gates, and audit trail (metadata only — no question
-  text). Mentions get a fresh single-exchange context and a threaded reply;
-  when DM chat is disabled the bot points at the web app at most once per
-  employee per day. Answers are Slack-formatted with an "Open Ask WEKA"
-  button, with a temporary eyes reaction while generating. Interactive answers
-  support anonymous HMAC-pseudonymized thumbs, an authorized "Post to channel"
-  action, and an editable ticket approval modal. Jira tickets are filed only
-  through the verified employee's own Jira connection.
-- **Thread/App Home/links**: opted-in thread catch-up is bounded to the current
-  thread or current channel (24 hours and 200 messages) and is never persisted.
-  App Home shows feature opt-in status. Deployment-domain link previews expose
-  only the Ask WEKA name/description, never conversation metadata or content.
+- **Inbound (trust boundary)**: three public endpoints — `/api/slack/events`,
+  `/api/slack/commands`, `/api/slack/interactions`. Slack is untrusted: each
+  endpoint verifies the `v0` HMAC signature over the **raw request body** and
+  a 5-min replay window *before parsing*, pins the `api_app_id` to the app ID
+  captured at verification time (fail-closed when unpinned), acknowledges
+  within Slack's 3-second window, and does all real work asynchronously.
+  DM chat and channel mentions are independently feature-gated by the admin.
+  All flows resolve the sender's WEKA email via `users.info`
+  (domain-allowlisted) and reuse the normal chat pipeline, AI safety gates,
+  and audit trail (metadata only — no question text). Mentions get a fresh
+  single-exchange context and a threaded reply; when DM chat is disabled the
+  bot points at the web app at most once per employee per day. Answers are
+  Slack-formatted with an "Open Ask WEKA" button, with a temporary eyes
+  reaction while generating.
+- **Slash commands**: admin-defined commands may carry a knowledge **domain**
+  (`IT`/`HR`/all) and administrator-authored **instructions** (non-secret,
+  ≤1000 chars) that scope/constrain the same protected pipeline used by web
+  chat. Command answers are ephemeral by default and offer **Post to
+  channel**, which republishes only the already-approved stored answer after
+  re-verifying the clicking employee's ownership.
+- **Interactive actions**: every answer carries thumbs-up/down buttons and,
+  for the employee's own conversations, **Create ticket**. Button values are
+  HMAC-signed references (message/conversation id only — never content or
+  identity); the click handler re-resolves the clicker's email via
+  `users.info`, re-verifies the signature, and re-checks ownership
+  server-side. Feedback writes through the shared web feedback rules
+  (one rating per employee/message, anonymous keyed rater pseudonym at rest,
+  domain/source context) so Slack ratings appear in the existing QA views.
+  Create ticket opens a review/edit/approve modal (AI draft is best-effort
+  and safety-gated); explicit submission files through the shared solve-first
+  core as the employee's own Jira connection, or the employee gets a safe
+  link to connect Jira in Ask WEKA first. Nothing is ever filed
+  automatically.
+- **Thread/channel summaries** (gate order: admin feature flag → employee
+  opt-in): mentioning the bot with "catch me up"/"summarize"/"tl;dr" fetches
+  at most the current thread, or the current channel's last 24 h / 200
+  messages (`conversations.replies`/`history` — the bot can only read
+  channels it was invited to). The transcript goes through the input screen,
+  approved Gemini pipeline, and output safety gate, and the reply (key
+  points / decisions / action items with owners) lands in the originating
+  thread. **Neither fetched Slack messages nor the summary are ever written
+  to the application database** — the audit row records scope + message
+  count only.
+- **App Home**: opening the bot's Home tab publishes a user-specific view
+  (what Ask WEKA is, admin-enabled features, the employee's own opt-in
+  status, links to Ask WEKA/preferences). No conversation content.
+- **Link unfurls**: only `https` links on this deployment's own domain get a
+  static, metadata-only card. Conversation titles/questions/answers are never
+  fetched or exposed, and foreign URLs are never unfurled.
 - **Outbound data flow**: ticket confirmations (title + Jira/Ask WEKA links)
   to the ticket owner, golden-run summaries to the initiating admin, optional
   regression posts, sync-failure alerts to the opted-in initiating admin plus
@@ -124,10 +155,17 @@ Outbound domain: `https://slack.com` (Web API) — the only Slack egress.
   channel. Every send is gated on admin feature toggles and, for user-specific
   messages, explicit employee opt-in (Slack tab / Notifications preferences).
   Messages use Block Kit; rate-limited calls retry once.
-- **Bot scopes** are generated from enabled features. The full set can include
-  `chat:write`, `im:read`, `im:history`, `im:write`, `users:read`,
-  `users:read.email`, `files:write`, `commands`, `reactions:write`,
-  `app_mentions:read`, channel/private-channel history, and `links:read/write`.
+- **Bot scopes** (minimum needed): `chat:write`, `im:read`, `im:history`,
+  `im:write`, `users:read`, `users:read.email`, `files:write`; plus, only
+  when the matching feature is enabled: `commands` (slash commands),
+  `app_mentions:read` (mentions/summaries), `channels:history` +
+  `groups:history` (summaries), `links:read` + `links:write` (unfurls). The
+  generated manifest emits exactly the events/scopes/home-tab/unfurl-domain
+  entries for enabled capabilities — reinstall it after changing features or
+  commands.
+- **Production review**: enabling summaries grants channel-history read
+  scopes — call this out in the IT review; content is processed in memory
+  only and never persisted.
 
 ### Upgrade path
 Tokens are scoped, expiring bearer credentials for now. When IT provisions an
