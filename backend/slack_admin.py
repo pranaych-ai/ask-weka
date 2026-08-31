@@ -64,6 +64,8 @@ class CommandIn(BaseModel):
     command: str
     description: str = ""
     usage_hint: str = ""
+    # Optional knowledge-base scope ("" | "IT" | "HR") and administrator
+    # instructions that constrain the shared answer pipeline. Non-secret.
     domain: str = ""
     instructions: str = ""
 
@@ -118,15 +120,16 @@ def put_config(
             cmd = c.command.strip()
             if not cmd.startswith("/") or len(cmd) < 2 or " " in cmd:
                 raise HTTPException(400, f"Invalid slash command: {cmd!r}")
-            if c.domain not in ("", "IT", "HR"):
-                raise HTTPException(400, "Command domain must be IT, HR, or empty")
+            domain = c.domain.strip().upper()
+            if domain not in svc.COMMAND_DOMAINS:
+                raise HTTPException(400, f"domain must be one of {svc.COMMAND_DOMAINS}")
             cmds.append(
                 {
                     "command": cmd[:32],
                     "description": c.description.strip()[:100],
                     "usage_hint": c.usage_hint.strip()[:100],
-                    "domain": c.domain,
-                    "instructions": c.instructions.strip()[:2000],
+                    "domain": domain,
+                    "instructions": c.instructions.strip()[:1000],
                 }
             )
         row.slash_commands = json.dumps(cmds)

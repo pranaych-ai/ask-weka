@@ -1,3 +1,4 @@
 - [Gemini model retirement](gemini-model.md) — retired default model causes chat 404s; fix by bumping the GEMINI_MODEL env var, not code.
 - [GitHub sync](github-sync.md) — repo not auto-pushed; run scripts/sync-github.sh at end of each work session to push dev + main.
 - [AI safety gate coverage](ai-safety-gate.md) — every new Gemini egress path must call the output gate; re-run live eval on model/prompt changes.
+- [Slack interactivity](slack-interactivity.md) — buttons/modals carry only HMAC-signed refs; ownership re-checked server-side; summaries are consented and never persisted.

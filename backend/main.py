@@ -7,7 +7,6 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .admin import router as admin_router
@@ -212,18 +211,6 @@ with engine.begin() as _conn:
                 "ALTER TABLE slack_integration ADD COLUMN app_id VARCHAR(30) NOT NULL DEFAULT ''"
             )
 
-    # One rating per employee per assistant message. Clean up any legacy
-    # duplicates before enforcing this at the database layer so concurrent
-    # web/Slack button deliveries cannot create contradictory rows.
-    _conn.execute(_text(
-        "DELETE FROM feedback WHERE id NOT IN ("
-        "SELECT MIN(id) FROM feedback GROUP BY message_id, username)"
-    ))
-    _conn.execute(_text(
-        "CREATE UNIQUE INDEX IF NOT EXISTS uq_feedback_message_rater "
-        "ON feedback (message_id, username)"
-    ))
-
     # Unique history versions per KB section (works on postgres and sqlite)
     _conn.execute(_text(
         "CREATE UNIQUE INDEX IF NOT EXISTS uq_kb_section_version "
@@ -422,20 +409,7 @@ def delete_conversation(
 
 # ---------- Feedback ----------
 
-from .analysis import classify_domain as _classify_domain  # noqa: E402
-from .analysis import extract_sources as _extract_sources  # noqa: E402
-from .analysis import summarize as _summarize  # noqa: E402
-
-
-def _rater_hash(username: str) -> str:
-    """Keyed pseudonym of the rater (HMAC with the server secret): enables
-    one-feedback-per-person per message without storing who rated what, and
-    cannot be reversed by hashing a list of known employee names."""
-    import hashlib
-    import hmac as _hmac
-
-    key = (SESSION_SECRET or "dev-only-insecure").encode()
-    return _hmac.new(key, username.strip().lower().encode(), hashlib.sha256).hexdigest()
+from .feedback_service import record_feedback as _record_feedback  # noqa: E402
 
 
 class FeedbackRequest(BaseModel):
@@ -461,70 +435,11 @@ def submit_feedback(
     msg = db.get(Message, req.message_id)
     if not msg or msg.role != "assistant" or msg.conversation.username != user["username"]:
         raise HTTPException(404, "Assistant message not found")
-    answer = msg.content
-    question = ""
-    for m in msg.conversation.messages:
-        if m.id == msg.id:
-            break
-        if m.role == "user":
-            question = m.content
 
-    # Feedback is anonymous by design: only a one-way hash of the username is
-    # stored (needed to keep one feedback row per message per person), and it
-    # is never exposed through the admin API or UI.
-    rater = _rater_hash(user["username"])
-
-    # One feedback row per (message, user): update in place so a changed or
-    # cleared thumb never leaves contradictory rows behind.
-    fb = (
-        db.query(Feedback)
-        .filter(Feedback.message_id == msg.id, Feedback.username == rater)
-        .first()
-    )
-    if not fb:
-        fb = Feedback(message_id=msg.id, username=rater)
-        db.add(fb)
-    fb.question = question.strip()
-    fb.answer_summary = _summarize(answer)
-    fb.thumbs = req.thumbs or ""
-    if req.feedback_text is not None:
-        fb.feedback_text = req.feedback_text.strip()
-    fb.logged_time = datetime.now(timezone.utc)
-    fb.cited_sources = "\n".join(_extract_sources(answer))
-    fb.domain = _classify_domain(question, answer)
-    try:
-        db.flush()
-    except IntegrityError:
-        # A simultaneous web/Slack rating won the insert. Reload and update
-        # that row instead of returning an error or duplicating it.
-        db.rollback()
-        msg = db.get(Message, req.message_id)
-        if (
-            not msg
-            or msg.role != "assistant"
-            or msg.conversation.username != user["username"]
-        ):
-            raise HTTPException(404, "Assistant message not found")
-        fb = (
-            db.query(Feedback)
-            .filter(Feedback.message_id == msg.id, Feedback.username == rater)
-            .one()
-        )
-        fb.question = question.strip()
-        fb.answer_summary = _summarize(answer)
-        fb.thumbs = req.thumbs or ""
-        if req.feedback_text is not None:
-            fb.feedback_text = req.feedback_text.strip()
-        fb.logged_time = datetime.now(timezone.utc)
-        fb.cited_sources = "\n".join(_extract_sources(answer))
-        fb.domain = _classify_domain(question, answer)
-    # Audit records that feedback was submitted, but never which question it
-    # was for — feedback must stay anonymous, so no message/conversation ids.
-    log_event(
-        db,
-        user["username"],
-        "feedback.submit",
-        f"thumbs={fb.thumbs or 'none'} has_text={bool(fb.feedback_text)}",
+    # Shared rules (feedback_service): anonymous keyed pseudonym at rest, one
+    # row per (message, rater), server-side question/answer context.
+    fb = _record_feedback(
+        db, user["username"], msg, req.thumbs or "", req.feedback_text, via="web"
     )
     db.commit()
     return {"ok": True, "id": fb.id}

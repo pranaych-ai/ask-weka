@@ -108,11 +108,6 @@ export default function SlackAdmin() {
   if (!cfg) return <div className="admin-loading">Loading…</div>;
 
   const setFeature = (key, value) => save({ features: { [key]: value } }, `f-${key}`);
-  const setCommand = (index, patch) => {
-    const commands = cfg.slash_commands.map((c, i) => (i === index ? { ...c, ...patch } : c));
-    setCfg({ ...cfg, slash_commands: commands });
-    save({ slash_commands: commands }, `command-${index}`);
-  };
 
   return (
     <div>
@@ -253,48 +248,107 @@ export default function SlackAdmin() {
 
       <h2>Slash commands</h2>
       <p className="admin-detail">
-        Registered in the generated manifest. Each command can scope the knowledge base and add
-        administrator instructions; answers remain ephemeral until the asker explicitly posts.
+        Registered in the generated manifest and answered through the same protected knowledge
+        pipeline as web chat. A command's <b>domain</b> scopes the knowledge base, and its{" "}
+        <b>instructions</b> (never secret) additionally constrain the answer. Reinstall the
+        manifest in Slack after changing commands.
       </p>
+      <CommandsEditor
+        commands={cfg.slash_commands}
+        busy={!!busy}
+        onSave={(cmds) => save({ slash_commands: cmds }, "commands")}
+      />
+    </div>
+  );
+}
+
+function CommandsEditor({ commands, busy, onSave }) {
+  const [rows, setRows] = useState(commands);
+  const [dirty, setDirty] = useState(false);
+  useEffect(() => {
+    setRows(commands);
+    setDirty(false);
+  }, [commands]);
+
+  const update = (i, field, value) => {
+    setRows(rows.map((r, j) => (j === i ? { ...r, [field]: value } : r)));
+    setDirty(true);
+  };
+  const remove = (i) => {
+    setRows(rows.filter((_, j) => j !== i));
+    setDirty(true);
+  };
+  const add = () => {
+    setRows([...rows, { command: "/", description: "", usage_hint: "", domain: "", instructions: "" }]);
+    setDirty(true);
+  };
+
+  return (
+    <div>
       <table className="admin-table">
         <thead>
-          <tr><th>Command</th><th>Description</th><th>Usage hint</th><th>Domain</th><th>Instructions</th></tr>
+          <tr>
+            <th>Command</th><th>Description</th><th>Usage hint</th><th>Domain</th>
+            <th>Instructions</th><th></th>
+          </tr>
         </thead>
         <tbody>
-          {cfg.slash_commands.map((c, index) => (
-            <tr key={c.command}>
-              <td><code>{c.command}</code></td>
-              <td>{c.description}</td>
-              <td className="admin-detail">{c.usage_hint}</td>
+          {rows.map((c, i) => (
+            <tr key={i}>
               <td>
-                <select
-                  value={c.domain || ""}
-                  disabled={!!busy}
-                  onChange={(e) => setCommand(index, { domain: e.target.value })}
-                >
+                <input
+                  value={c.command}
+                  placeholder="/askweka"
+                  onChange={(e) => update(i, "command", e.target.value)}
+                />
+              </td>
+              <td>
+                <input
+                  value={c.description}
+                  maxLength={100}
+                  onChange={(e) => update(i, "description", e.target.value)}
+                />
+              </td>
+              <td>
+                <input
+                  value={c.usage_hint}
+                  maxLength={100}
+                  onChange={(e) => update(i, "usage_hint", e.target.value)}
+                />
+              </td>
+              <td>
+                <select value={c.domain || ""} onChange={(e) => update(i, "domain", e.target.value)}>
                   <option value="">All</option>
                   <option value="IT">IT</option>
                   <option value="HR">HR</option>
                 </select>
               </td>
               <td>
-                <input
+                <textarea
                   value={c.instructions || ""}
-                  disabled={!!busy}
-                  placeholder="Optional command-specific guidance"
-                  onChange={(e) => {
-                    const commands = cfg.slash_commands.map((x, i) =>
-                      i === index ? { ...x, instructions: e.target.value } : x
-                    );
-                    setCfg({ ...cfg, slash_commands: commands });
-                  }}
-                  onBlur={(e) => setCommand(index, { instructions: e.target.value })}
+                  maxLength={1000}
+                  rows={2}
+                  placeholder="Optional admin instructions (never secret)"
+                  onChange={(e) => update(i, "instructions", e.target.value)}
                 />
+              </td>
+              <td>
+                <button className="qa-mini" disabled={busy} onClick={() => remove(i)}>
+                  Remove
+                </button>
               </td>
             </tr>
           ))}
         </tbody>
       </table>
+      <div className="slack-actions">
+        <button className="qa-mini" disabled={busy} onClick={add}>
+          Add command
+        </button>
+        <button className="kb-save" disabled={busy || !dirty} onClick={() => onSave(rows)}>
+          Save commands
+        </button>
+      </div>
     </div>
   );
 }

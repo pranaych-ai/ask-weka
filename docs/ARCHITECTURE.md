@@ -72,23 +72,25 @@ Internal AI assistant for WEKA employees (HR/IT questions over the internal know
   A first valid DM/mention upserts the employee's Slack identity without
   changing consent. Inbound interactions audit metadata only (`slack.inbound`
   username/type/success — never question text).
-- **Slack → API trust boundary**: the three public webhook surfaces are
-  `/api/slack/events`, `/api/slack/commands`, and
-  `/api/slack/interactivity` (legacy `/interactions` alias). Each verifies the
-  HMAC over the untouched raw request body before parsing, rejects timestamps
-  outside five minutes, pins `api_app_id` to the verified app, and acknowledges
-  before slow work. Employee actions are authorized by a fresh Slack
-  `users.info` email lookup and a server-side owned-message lookup. Slack uses
-  the same command domain KB filtering as the portal. Credentials remain only
-  in environment-scoped Replit Secrets; **there is no DB-stored-credentials
-  deviation and no admin credential input**.
-- **Interactive privacy**: thumbs use the same server-secret HMAC rater
-  pseudonym as portal feedback. Ticket actions open an editable approval modal
-  and file through the employee's own `JiraAccount`; they never create a Jira
-  issue directly from a button. Thread catch-up requires both the admin feature
-  flag and employee opt-in, reads at most 200 current-channel/current-thread
-  messages from the last 24 hours, and stores neither source nor summary.
-  Link previews contain deployment/app metadata only.
+- **Interactivity**: `/api/slack/interactions` verifies the raw form body the
+  same way (signature → replay → `api_app_id` pin), acks in <3 s, and
+  processes asynchronously. Button values are HMAC-signed references (ids
+  only); identity is re-resolved via `users.info` and ownership re-checked
+  server-side on every click — client-supplied identity/content is never
+  trusted. Feedback clicks reuse the shared `feedback_service` rules
+  (anonymous keyed rater pseudonym, one rating per employee/message);
+  Post-to-channel republishes only the stored, already-safety-gated answer;
+  Create ticket is a review/edit/approve modal over the shared solve-first
+  `tickets.file_ticket` core (per-user Jira connection, DB-level double-file
+  lock) — never automatic.
+- **Summaries (consented, ephemeral)**: gate order is admin `thread_summaries`
+  flag, then the employee's explicit opt-in. Fetch is bounded to the current
+  thread or the channel's last 24 h/200 messages; transcript and summary flow
+  through the input screen + approved Gemini pipeline + output safety gate and
+  are **never persisted** — audit rows carry scope and message count only.
+- **App Home & unfurls**: Home tab shows per-user feature/opt-in status and
+  links only; unfurls are static metadata cards for this deployment's own
+  domain only — no conversation content is ever fetched or shown in either.
 - **RBAC**: `/api/admin/slack/*` is admin-only (centrally audited);
   `/api/slack/prefs` requires an authenticated employee and only exposes
   administrator-enabled, opt-in features.
