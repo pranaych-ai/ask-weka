@@ -1,0 +1,21 @@
+Finish the integration with the interactive features. Create the two new public endpoints on the slack_app.py router, verified exactly like /api/slack/events (raw-body signature, replay window, app-id check, 3-second ack with async work):
+
+Slash commands (feature flag: slash_commands) — POST /api/slack/commands
+Match the payload's command name against the admin-configured command list from Prompt 1.
+On a configured command with text (e.g. "/ask-it how do I request a laptop?"): acknowledge immediately with an ephemeral "Working on it…", then answer through the chat pipeline with the command's stored instructions appended to the system prompt and the command's domain used the same way the web app's domain scope works (KB filtering + conversation.domain, which also drives Jira project routing). Deliver the answer via the response_url as an ephemeral message with a "Post to channel" button that reposts it publicly when clicked.
+Unknown command, feature disabled, or unresolvable user → short ephemeral explanation.
+Interactivity (feature flag: interactivity) — POST /api/slack/interactivity
+The payload arrives as a form field named "payload" containing JSON — verify the signature on the raw form body BEFORE parsing.
+Support at minimum: the "Post to channel" button above; an "Open in Ask WEKA" link button on notifications; 👍/👎 feedback buttons appended to every Slack answer that write to the existing Feedback table (message id, question, answer summary, thumbs, username, domain — same shape the web app writes, so Slack feedback shows up in the existing admin Feedback/QA views); and a "Create ticket" button on answers that couldn't resolve the issue — it reuses the existing tickets.py draft/approve flow as that employee via their JiraAccount connection, and if they haven't connected Jira, replies ephemerally with a link to connect in Ask WEKA first (tickets are always filed AS the employee, never by a bot account).
+Thread catch-up & summaries (feature flag: thread_summaries)
+When the bot is mentioned with "catchup" or "summarize" in a channel it's in: fetch recent history (last 24 hours or last 200 messages, whichever is smaller) — or the thread's replies when mentioned inside a thread — and produce a concise AI summary (key points, decisions, action items with owners). Reply in-thread.
+Careful handling: only the channel where the request was made, never persist the fetched messages or the summary to the database, and require BOTH the admin flag AND the requesting user's opt-in (this feature reads other people's messages, so it stays individually consented).
+App Home (rides the dm_chat flag)
+Subscribe to app_home_opened and publish a Home tab: what Ask WEKA is, the viewer's opt-in status per feature, and buttons to open Ask WEKA and manage preferences there.
+Link unfurling (feature flag: link_unfurl)
+Subscribe to link_shared for this deployment's domain. When someone pastes an Ask WEKA link in Slack, unfurl it with the app name and a one-line description — metadata only, never conversation content (a conversation link unfurl must not leak the conversation title or messages to a channel).
+Wrap-up
+Update the Prompt 1 manifest generator so it now emits the event subscriptions (message.im, app_mention, app_home_opened, link_shared), the interactivity URL, and the configured slash commands — a fresh paste of the manifest sets up everything at once.
+Document in replit.md: the three public endpoints, where the credentials live (encrypted DB row, env fallback), the admin setup flow, and the feature/opt-in gate order.
+Update docs/ARCHITECTURE.md: add "Slack → API" as a trust boundary (signature-verified, replay-protected, app-id checked, email-gated identity, same KB scoping as the portal) and record the DB-stored-credentials deviation for IT sign-off.
+Add tests for command matching, the interactivity signature path, and the feedback write. Run pytest, rebuild the frontend, and remind the owner to run the weka-compliance-audit skill before any production deploy.
