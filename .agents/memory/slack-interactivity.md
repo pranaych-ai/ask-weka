@@ -1,20 +1,28 @@
 ---
-name: Slack interactive security pattern
-description: Conventions for Slack buttons/modals, summaries, and unfurls in Ask WEKA
+name: Slack interactive security decisions
+description: Durable security rules for Slack buttons, modals, and summaries in Ask WEKA
 ---
 
-Rule: Slack interactive elements never carry content or identity. Button values and
-modal private_metadata are HMAC-signed references (`sign_action`/`parse_action` in
-slack_service, keyed on SESSION_SECRET, kinds `m`=message, `c`=conversation). Handlers
-re-resolve the clicker via users.info and re-check ownership server-side.
+Rule: Slack interactive payloads (buttons, modal metadata) must never carry content or
+identity — only server-signed references — and every click handler must re-resolve the
+clicking employee's identity and re-check ownership against the database before acting.
 
-**Why:** Slack payloads are attacker-controllable after signature verification (any
-workspace user can craft clicks); trusting ids or text would let one employee rate,
-repost, or escalate another's conversations.
+**Why:** after Slack's request signature is verified, the payload is still
+attacker-controllable by any workspace member; trusting embedded ids or text would let
+one employee rate, republish, or escalate another employee's conversations.
 
-**How to apply:** any new Slack button/modal must (1) sign its reference, (2) verify
-via parse_action, (3) re-check ownership from the DB, (4) route content from the DB
-only. Summaries/catch-up: admin flag → employee opt-in gate order, bounded fetch
-(thread, or channel 24h/200 msgs), and NEVER persist fetched Slack content or the
-summary. Manifest scopes are emitted per enabled feature only — reinstall manifest
-after feature/command changes.
+**How to apply:** any new Slack interactive element routes all displayed/persisted
+content from the DB, never from the payload.
+
+Rule: thread/channel summaries are consent-gated (admin flag, then employee opt-in),
+bounded to the originating thread/channel, and neither fetched Slack messages nor the
+generated summary may ever be persisted; each Slack capability delivers through its OWN
+feature gate (summaries must not depend on the channel-mentions gate).
+
+**Why:** channel history is other people's content — persistence or cross-feature
+gating either leaks data or silently breaks the feature when a sibling flag is off
+(caught in code review once).
+
+**How to apply:** new Slack flows pick their own gate feature and stay in-memory for
+any fetched Slack content; reinstall the manifest after feature/command changes since
+scopes are emitted per enabled feature.

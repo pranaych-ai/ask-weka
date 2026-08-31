@@ -573,6 +573,58 @@ def test_summary_bounded_fetch_and_no_persistence(monkeypatch):
         db.close()
 
 
+def test_summary_works_without_channel_mentions(monkeypatch):
+    """Regression: summaries are an independent capability — with
+    channel_mentions disabled and thread_summaries enabled, a consented
+    catch-up mention still fetches, summarizes, and replies in-thread."""
+    _enable(monkeypatch, features={**ALL_INTERACTIVE, "channel_mentions": False})
+    calls = []
+    _patch_api(
+        monkeypatch,
+        calls,
+        responses={
+            "conversations.replies": {
+                "ok": True,
+                "messages": [{"type": "message", "user": "U1", "text": "Ship it Friday", "ts": "1"}],
+            }
+        },
+    )
+    _optin()
+
+    class FakeProvider:
+        async def stream_chat(self, system, messages):
+            yield "**Key points**\n• Ship Friday\n**Decisions**\n• None\n**Action items**\n• None"
+
+    import backend.providers as providers_module
+
+    monkeypatch.setattr(providers_module, "get_provider", lambda: FakeProvider())
+
+    _signed_event(_mention_event("<@UBOT> tl;dr", thread_ts="200.2"))
+    assert _wait(
+        lambda: any(m == "chat.postMessage" and "Key points" in p.get("text", "") for m, p in calls)
+    )
+    post = next(p for m, p in calls if m == "chat.postMessage" and "Key points" in p.get("text", ""))
+    assert post.get("thread_ts") == "200.2"
+    # Non-summary questions are NOT answered in this mode.
+    calls.clear()
+    _signed_event(_mention_event("<@UBOT> how do I request a laptop?"))
+    time.sleep(0.4)
+    assert not any(m == "chat.postMessage" for m, _ in calls)
+
+
+def test_manifest_reactions_scope_for_summaries_only(monkeypatch):
+    _enable(
+        monkeypatch,
+        features={"dm_chat": False, "channel_mentions": False, "thread_summaries": True},
+    )
+    db = SessionLocal()
+    try:
+        m = svc.generate_manifest(db)
+    finally:
+        db.close()
+    assert "reactions:write" in m["oauth_config"]["scopes"]["bot"]
+
+
 def test_summary_channel_window_24h(monkeypatch):
     _enable(monkeypatch)
     calls = []

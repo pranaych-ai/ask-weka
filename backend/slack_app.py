@@ -453,8 +453,10 @@ async def _summarize_mention(
     reply_ts = thread_ts or ts
     base = svc.public_base_url()
     if not features.get("thread_summaries"):
-        await svc.notify_direct_channel(
-            "channel_mentions",
+        # The summary feature is off, so its own delivery gate cannot pass —
+        # use the master-switch-gated service notice (like the disabled-DM
+        # pointer) to explain why nothing will be summarized.
+        await svc.send_inbound_notice(
             channel,
             "Thread summaries are not enabled by your administrators. "
             "You can still ask me a question by mentioning me with it.",
@@ -464,7 +466,7 @@ async def _summarize_mention(
         return
     if not _summary_consented(email):
         await svc.notify_direct_channel(
-            "channel_mentions",
+            "thread_summaries",
             channel,
             "Thread summaries need your personal opt-in first — turn on "
             f"*Thread & channel summaries* in your Ask WEKA preferences: {base}",
@@ -478,7 +480,7 @@ async def _summarize_mention(
         msgs = await _fetch_summary_messages(channel, thread_ts)
         if not msgs:
             await svc.notify_direct_channel(
-                "channel_mentions",
+                "thread_summaries",
                 channel,
                 "There's nothing recent here to summarize.",
                 thread_ts=reply_ts,
@@ -523,7 +525,7 @@ async def _summarize_mention(
 
         scope = "thread" if thread_ts else f"channel_{_SUMMARY_WINDOW_HOURS}h"
         await svc.notify_direct_channel(
-            "channel_mentions",
+            "thread_summaries",
             channel,
             summary[:39000],
             blocks=svc.text_blocks(svc.to_slack_mrkdwn(summary[:2900])),
@@ -540,7 +542,7 @@ async def _summarize_mention(
         _audit_inbound(email, "summary", False)
         try:
             await svc.notify_direct_channel(
-                "channel_mentions",
+                "thread_summaries",
                 channel,
                 "Sorry — I couldn't summarize that. Make sure I was invited to "
                 "this channel, then try again.",

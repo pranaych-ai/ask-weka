@@ -656,7 +656,9 @@ async def notify_direct_channel(
         return False
 
 
-async def send_inbound_notice(channel: str, text: str, blocks: list[dict] | None = None) -> bool:
+async def send_inbound_notice(
+    channel: str, text: str, blocks: list[dict] | None = None, thread_ts: str = ""
+) -> bool:
     """Post a service notice to a channel gated on the master switch only.
 
     Used for the once-daily "DM chat is disabled" pointer — by definition
@@ -680,6 +682,7 @@ async def send_inbound_notice(channel: str, text: str, blocks: list[dict] | None
                 "text": text[:3000],
                 "blocks": blocks or text_blocks(text),
                 "unfurl_links": False,
+                **({"thread_ts": thread_ts} if thread_ts else {}),
             },
         )
         if data.get("ok"):
@@ -846,8 +849,12 @@ def generate_manifest(db: Session) -> dict:
             "token_rotation_enabled": False,
         },
     }
-    if features.get("dm_chat") or features.get("channel_mentions"):
-        # The eyes reaction while an answer is being generated.
+    if (
+        features.get("dm_chat")
+        or features.get("channel_mentions")
+        or features.get("thread_summaries")
+    ):
+        # The eyes reaction while an answer/summary is being generated.
         manifest["oauth_config"]["scopes"]["bot"].append("reactions:write")
     if features.get("channel_mentions") or features.get("thread_summaries"):
         manifest["oauth_config"]["scopes"]["bot"].append("app_mentions:read")
