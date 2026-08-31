@@ -336,7 +336,8 @@ def test_config_validation():
 
 def test_manifest_generation(monkeypatch):
     monkeypatch.setenv("SLACK_APP_BASE_URL", "https://askweka.example.com")
-    _reset_integration()
+    # Slash commands appear in the manifest only when the admin enables them.
+    _reset_integration(features={"slash_commands": True})
     data = client.get("/api/admin/slack/manifest").json()
     m = data["manifest"]
     assert m["settings"]["event_subscriptions"]["request_url"] == \

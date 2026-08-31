@@ -66,6 +66,7 @@ def _inbound_config() -> dict | None:
             "enabled": row.enabled,
             "verified": row.verified,
             "features": svc.parse_features(row),
+            "commands": svc.parse_commands(row),
             "app_id": row.app_id,
             "bot_user_id": row.bot_user_id,
         }
@@ -536,15 +537,111 @@ async def slack_events(request: Request):
     return {"ok": True}
 
 
-# ---------- Slash-command / interactivity scaffolding ----------
-# The generated app manifest registers these URLs. Behavior beyond safe
-# acknowledgement is out of scope for now — but the endpoints are protected
-# with the same signature verification and never leak credentials.
+# ---------- Slash commands ----------
+
+
+async def _answer_command(
+    slack_user: str, text: str, response_url: str, in_channel: bool
+) -> None:
+    """/askweka: same protected pipeline as DMs/mentions — WEKA identity
+    check, input screen, provider, output safety gate, metadata-only audit.
+    Fresh single-exchange context; the reply goes through the slash command's
+    response_url (ephemeral or in-channel per admin configuration)."""
+    email = ""
+    try:
+        email = await _resolve_email(slack_user)
+        if not email:
+            await svc.respond_to_command(
+                response_url,
+                "Sorry — I can only help verified WEKA employees, and I couldn't "
+                "confirm your account. Please contact #it-help.",
+            )
+            _audit_inbound("", "command", False)
+            return
+
+        _record_identity(email, slack_user)
+
+        if not text:
+            await svc.respond_to_command(
+                response_url,
+                "Ask me a question, e.g. `/askweka how do I request a laptop?`",
+            )
+            _audit_inbound(email, "command_empty", True)
+            return
+
+        from .ai_safety import screen_question
+
+        db = SessionLocal()
+        try:
+            conv = Conversation(title="Slack command", username=email, domain="")
+            db.add(conv)
+            db.flush()
+            conv.messages.append(Message(role="user", content=text))
+            log_event(db, email, "conversation.create", f"id={conv.id} via=slack_command")
+            log_event(db, email, "chat.message", f"conversation_id={conv.id} via=slack_command")
+            inbound = screen_question(text)
+            if inbound.findings:
+                log_event(
+                    db,
+                    email,
+                    "chat.injection_flagged",
+                    f"conversation_id={conv.id} findings={','.join(inbound.findings)} via=slack_command",
+                )
+            db.commit()
+            conversation_id = conv.id
+        finally:
+            db.close()
+
+        # Fresh single-exchange context: exactly this one question.
+        answer, safety_events = await _generate_answer([{"role": "user", "content": text}])
+
+        db = SessionLocal()
+        try:
+            msg = Message(conversation_id=conversation_id, role="assistant", content=answer)
+            db.add(msg)
+            db.flush()
+            log_event(
+                db,
+                email,
+                "chat.response",
+                f"conversation_id={conversation_id} message_id={msg.id} via=slack_command",
+            )
+            for event, findings in safety_events:
+                log_event(
+                    db,
+                    email,
+                    event,
+                    f"conversation_id={conversation_id} findings={findings} via=slack_command",
+                )
+            db.commit()
+        finally:
+            db.close()
+
+        await svc.respond_to_command(
+            response_url,
+            answer[:39000],
+            blocks=svc.answer_blocks(answer[:11000]),
+            in_channel=in_channel,
+        )
+        _audit_inbound(email, "command", True)
+    except Exception as e:
+        logger.exception("Slack command handling failed")
+        alerts.record_ai_failure(f"Slack command: {type(e).__name__}")
+        _audit_inbound(email, "command", False)
+        try:
+            await svc.respond_to_command(
+                response_url,
+                "Sorry — something went wrong answering that. Please try again, "
+                "or ask in #it-help / #hr-help.",
+            )
+        except Exception:
+            logger.exception("Slack command error notification failed")
 
 
 @router.post("/commands")
 async def slack_commands(request: Request):
-    if not _slack_enabled():
+    cfg = _inbound_config()
+    if cfg is None:
         return Response(status_code=404)
     body = await request.body()
     if not _verify_signature(
@@ -553,10 +650,54 @@ async def slack_commands(request: Request):
         request.headers.get("X-Slack-Signature", ""),
     ):
         return Response(status_code=401)
-    return {
-        "response_type": "ephemeral",
-        "text": "Slash commands aren't enabled yet — DM me your question instead!",
-    }
+
+    from urllib.parse import parse_qs
+
+    form = {k: v[0] for k, v in parse_qs(body.decode("utf-8", "replace")).items()}
+
+    # Same fail-closed app-ID pinning as the events endpoint.
+    api_app_id = str(form.get("api_app_id") or "")
+    if not cfg["app_id"] or api_app_id != cfg["app_id"]:
+        log_event_standalone(
+            "system",
+            "slack.reject",
+            "reason=app_id_unpinned" if not cfg["app_id"]
+            else f"reason=app_id_mismatch app_id={api_app_id[:30] or 'missing'}",
+        )
+        return Response(status_code=403)
+
+    # Only commands an admin actually configured are admitted; anything else
+    # gets a safe ephemeral notice.
+    command = (form.get("command") or "").strip()
+    if command not in {c["command"] for c in cfg["commands"]}:
+        return {
+            "response_type": "ephemeral",
+            "text": "Sorry — I don't recognize that command. Try `/askweka your question`.",
+        }
+
+    features = cfg["features"]
+    if not features.get("slash_commands"):
+        return {
+            "response_type": "ephemeral",
+            "text": "Slash commands aren't enabled — DM me your question, or ask at "
+            f"{svc.public_base_url()}",
+        }
+
+    slack_user = form.get("user_id", "")
+    response_url = form.get("response_url", "")
+    if not slack_user or not response_url:
+        return Response(status_code=400)
+
+    # Ack within Slack's 3s window; answer in the background.
+    asyncio.get_running_loop().create_task(
+        _answer_command(
+            slack_user,
+            (form.get("text") or "").strip(),
+            response_url,
+            bool(features.get("slash_in_channel")),
+        )
+    )
+    return {"response_type": "ephemeral", "text": ":eyes: On it — checking the knowledge base…"}
 
 
 @router.post("/interactions")

@@ -658,6 +658,302 @@ def test_inbound_audit_has_no_question_text(monkeypatch):
         db.close()
 
 
+# ---------- /askweka slash command ----------
+
+RESP_URL = "https://hooks.slack.com/commands/T1/123/abc"
+
+
+def _signed_command_post(form: dict, secret: str = SECRET, ts: str = None):
+    from urllib.parse import urlencode
+
+    body = urlencode(form).encode()
+    ts = ts or str(int(time.time()))
+    sig = "v0=" + hmac.new(secret.encode(), f"v0:{ts}:{body.decode()}".encode(), hashlib.sha256).hexdigest()
+    return client.post(
+        "/api/slack/commands",
+        content=body,
+        headers={
+            "Content-Type": "application/x-www-form-urlencoded",
+            "X-Slack-Request-Timestamp": ts,
+            "X-Slack-Signature": sig,
+        },
+    )
+
+
+def _command_form(text="My VPN keeps dropping", app_id="ATEST", **kw):
+    form = {
+        "command": "/askweka",
+        "text": text,
+        "user_id": "U123",
+        "channel_id": "C123",
+        "response_url": RESP_URL,
+    }
+    if app_id:
+        form["api_app_id"] = app_id
+    form.update(kw)
+    return form
+
+
+def _patch_respond(monkeypatch, responses):
+    async def fake_respond(response_url, text, blocks=None, in_channel=False):
+        responses.append(
+            {"url": response_url, "text": text, "blocks": blocks, "in_channel": in_channel}
+        )
+        return True
+
+    monkeypatch.setattr(slack_module.svc, "respond_to_command", fake_respond)
+
+
+def test_command_requires_signature_and_integration(monkeypatch):
+    monkeypatch.delenv("SLACK_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("SLACK_SIGNING_SECRET", raising=False)
+    assert client.post("/api/slack/commands", content=b"x=1").status_code == 404
+    _enable(monkeypatch, features={"slash_commands": True})
+    assert client.post("/api/slack/commands", content=b"x=1").status_code == 401
+    assert _signed_command_post(_command_form(), secret="wrong").status_code == 401
+
+
+def test_command_app_id_pinning(monkeypatch):
+    _enable(monkeypatch, features={"slash_commands": True}, app_id="A111")
+    responses = []
+    _patch_respond(monkeypatch, responses)
+    assert _signed_command_post(_command_form(app_id="A999")).status_code == 403
+    assert _signed_command_post(_command_form(app_id=None)).status_code == 403
+    time.sleep(0.2)
+    assert responses == []
+
+
+def test_command_feature_gated_independently(monkeypatch):
+    # dm_chat on but slash_commands off: polite ephemeral notice, no answer.
+    _enable(monkeypatch, features={"dm_chat": True, "slash_commands": False})
+    responses = []
+    _patch_respond(monkeypatch, responses)
+    r = _signed_command_post(_command_form())
+    assert r.status_code == 200
+    data = r.json()
+    assert data["response_type"] == "ephemeral" and "aren't enabled" in data["text"]
+    time.sleep(0.3)
+    assert responses == []
+
+
+def test_command_answered_ephemeral_and_audited(monkeypatch):
+    _enable(monkeypatch, features={"slash_commands": True})
+    _patch_provider(monkeypatch)
+    calls = []
+    _patch_api(monkeypatch, calls)
+    responses = []
+    _patch_respond(monkeypatch, responses)
+
+    secret_q = "SLASHSECRET-plugh My VPN keeps dropping"
+    r = _signed_command_post(_command_form(text=secret_q))
+    assert r.status_code == 200
+    ack = r.json()
+    assert ack["response_type"] == "ephemeral" and "On it" in ack["text"]
+
+    for _ in range(50):
+        if responses:
+            break
+        time.sleep(0.1)
+    assert responses and responses[0]["url"] == RESP_URL
+    assert responses[0]["in_channel"] is False  # default: ephemeral answers
+    assert "VPN" in responses[0]["text"] and "portal.weka.io" in responses[0]["text"]
+    # Formatting: Slack Block Kit sections from the shared answer_blocks helper.
+    blocks = responses[0]["blocks"]
+    assert blocks[0]["type"] == "section"
+    assert "<https://portal.weka.io/it/vpn|VPN Guide>" in blocks[0]["text"]["text"]
+    assert blocks[-1]["type"] == "actions"
+
+    db = SessionLocal()
+    try:
+        conv = (
+            db.query(Conversation)
+            .filter(Conversation.title == "Slack command")
+            .order_by(Conversation.created_at.desc())
+            .first()
+        )
+        assert conv and conv.username == "jane@weka.io"
+        assert [m.role for m in conv.messages] == ["user", "assistant"]
+        rows = db.query(ActivityLog).all()
+        # Metadata-only audit: the question never appears in any log row.
+        assert all("SLASHSECRET-plugh" not in x.detail for x in rows)
+        inbound = [
+            x for x in rows
+            if x.action == "slack.inbound" and x.username == "jane@weka.io"
+        ]
+        assert any("type=command ok=true" in x.detail for x in inbound)
+        assert any(
+            "via=slack_command" in x.detail for x in rows if x.action == "chat.response"
+        )
+    finally:
+        db.close()
+
+
+def test_command_in_channel_mode(monkeypatch):
+    _enable(monkeypatch, features={"slash_commands": True, "slash_in_channel": True})
+    _patch_provider(monkeypatch)
+    calls = []
+    _patch_api(monkeypatch, calls)
+    responses = []
+    _patch_respond(monkeypatch, responses)
+    assert _signed_command_post(_command_form()).status_code == 200
+    for _ in range(50):
+        if responses:
+            break
+        time.sleep(0.1)
+    assert responses and responses[0]["in_channel"] is True
+
+
+def test_command_unverified_user_refused(monkeypatch):
+    _enable(monkeypatch, features={"slash_commands": True})
+    responses = []
+    _patch_respond(monkeypatch, responses)
+
+    async def fake(method, payload=None, **kw):
+        if method == "users.info":
+            return {"ok": False, "error": "user_not_found"}
+        return {"ok": True}
+
+    monkeypatch.setattr(slack_module, "_slack_call", fake)
+    monkeypatch.setattr(slack_module.svc, "slack_api", fake)
+
+    import asyncio as _a
+
+    _a.run(slack_module._answer_command("U404", "hi", RESP_URL, False))
+    assert responses and "verified WEKA employees" in responses[0]["text"]
+    db = SessionLocal()
+    try:
+        rows = db.query(ActivityLog).filter(ActivityLog.action == "slack.inbound").all()
+        assert any("type=command ok=false" in x.detail for x in rows)
+    finally:
+        db.close()
+
+
+def test_command_empty_text_prompts_and_records_identity(monkeypatch):
+    _enable(monkeypatch, features={"slash_commands": True})
+    calls = []
+    _patch_api(monkeypatch, calls, email="slashy@weka.io")
+    responses = []
+    _patch_respond(monkeypatch, responses)
+
+    import asyncio as _a
+
+    _a.run(slack_module._answer_command("U777", "", RESP_URL, False))
+    assert responses and "/askweka how do I request a laptop?" in responses[0]["text"]
+    db = SessionLocal()
+    try:
+        pref = db.get(SlackUserPref, "slashy@weka.io")
+        assert pref and pref.slack_user_id == "U777"  # first contact recorded
+        assert svc.parse_prefs(pref) == {}  # no consent granted
+        rows = db.query(ActivityLog).filter(
+            ActivityLog.action == "slack.inbound",
+            ActivityLog.username == "slashy@weka.io",
+        ).all()
+        assert any("type=command_empty ok=true" in x.detail for x in rows)
+    finally:
+        db.close()
+
+
+def test_unknown_command_rejected(monkeypatch):
+    # Only admin-configured commands are admitted (default: /askweka only).
+    _enable(monkeypatch, features={"slash_commands": True})
+    responses = []
+    _patch_respond(monkeypatch, responses)
+    r = _signed_command_post(_command_form(command="/evil"))
+    assert r.status_code == 200
+    data = r.json()
+    assert data["response_type"] == "ephemeral" and "don't recognize" in data["text"]
+    time.sleep(0.3)
+    assert responses == []
+
+
+class _FakeHTTPResponse:
+    status_code = 200
+
+
+class _FakeHTTPClient:
+    posted = []
+
+    def __init__(self, *a, **kw):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+    async def post(self, url, json=None, **kw):
+        _FakeHTTPClient.posted.append({"url": url, "json": json})
+        return _FakeHTTPResponse()
+
+
+def test_in_channel_downgraded_when_toggled_off_mid_flight(monkeypatch):
+    # An answer generated while slash_in_channel was on must NOT be posted
+    # publicly if the admin turns public answers off before delivery.
+    import httpx
+
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeHTTPClient)
+    import asyncio as _a
+
+    _FakeHTTPClient.posted = []
+    _enable(monkeypatch, features={"slash_commands": True, "slash_in_channel": False})
+    assert _a.run(svc.respond_to_command(RESP_URL, "answer", in_channel=True)) is True
+    assert _FakeHTTPClient.posted[0]["json"]["response_type"] == "ephemeral"
+
+    db = SessionLocal()
+    try:
+        rows = db.query(ActivityLog).filter(ActivityLog.action == "slack.skip").all()
+        assert any("in_channel_downgraded" in x.detail for x in rows)
+    finally:
+        db.close()
+
+    # With the toggle on, in_channel delivery goes through.
+    _FakeHTTPClient.posted = []
+    _enable(monkeypatch, features={"slash_commands": True, "slash_in_channel": True})
+    assert _a.run(svc.respond_to_command(RESP_URL, "answer", in_channel=True)) is True
+    assert _FakeHTTPClient.posted[0]["json"]["response_type"] == "in_channel"
+
+
+def test_respond_to_command_gate_and_url(monkeypatch):
+    import asyncio as _a
+
+    # Non-Slack destinations are never contacted.
+    _enable(monkeypatch, features={"slash_commands": True})
+    assert _a.run(svc.respond_to_command("https://evil.example/x", "hi")) is False
+    # Gate re-check: feature turned off after generation → send suppressed.
+    _enable(monkeypatch, features={"slash_commands": False})
+    assert _a.run(svc.respond_to_command(RESP_URL, "hi")) is False
+    db = SessionLocal()
+    try:
+        rows = db.query(ActivityLog).filter(ActivityLog.action == "slack.skip").all()
+        assert any("bad_response_url" in x.detail for x in rows)
+        assert any("feature=slash_commands reason=feature_disabled" in x.detail for x in rows)
+    finally:
+        db.close()
+
+
+def test_manifest_gates_commands_on_slash_feature(monkeypatch):
+    _enable(monkeypatch, features={"dm_chat": True, "slash_commands": False})
+    db = SessionLocal()
+    try:
+        m = svc.generate_manifest(db)
+    finally:
+        db.close()
+    assert "slash_commands" not in m["features"]
+    assert "commands" not in m["oauth_config"]["scopes"]["bot"]
+
+    _enable(monkeypatch, features={"dm_chat": False, "slash_commands": True})
+    db = SessionLocal()
+    try:
+        m2 = svc.generate_manifest(db)
+    finally:
+        db.close()
+    cmds = m2["features"]["slash_commands"]
+    assert cmds[0]["command"] == "/askweka"
+    assert cmds[0]["url"].endswith("/api/slack/commands")
+    assert "commands" in m2["oauth_config"]["scopes"]["bot"]
+
+
 # ---------- Manifest ----------
 
 

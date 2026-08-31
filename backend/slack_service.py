@@ -45,6 +45,18 @@ FEATURES: dict[str, dict] = {
         "user_optin": False,
         "default": False,
     },
+    "slash_commands": {
+        "label": "/askweka slash command",
+        "description": "Employees can run /askweka in any channel and get a KB-grounded answer.",
+        "user_optin": False,
+        "default": False,
+    },
+    "slash_in_channel": {
+        "label": "Slash answers visible in channel",
+        "description": "Post /askweka answers to the whole channel instead of only to the asker (ephemeral).",
+        "user_optin": False,
+        "default": False,
+    },
     "ticket_notifications": {
         "label": "Ticket notifications",
         "description": "DM an employee when their ticket is filed (Jira + Ask WEKA links).",
@@ -294,6 +306,56 @@ def _audit_skip(feature: str, reason: str, username: str | None) -> None:
         "system", "slack.skip", f"feature={feature} reason={reason}"
         + (f" user={username}" if username else "")
     )
+
+
+async def respond_to_command(
+    response_url: str,
+    text: str,
+    blocks: list[dict] | None = None,
+    in_channel: bool = False,
+) -> bool:
+    """Reply to a slash command via its Slack-supplied response_url.
+
+    Re-evaluates the central gate immediately before the send so an answer
+    generated in the background can never be delivered after an administrator
+    turns slash commands (or the whole integration) off. Only genuine Slack
+    hook URLs are accepted — never an attacker-influenced destination."""
+    try:
+        if not response_url.startswith("https://hooks.slack.com/"):
+            _audit_skip("slash_commands", "bad_response_url", None)
+            return False
+        db = SessionLocal()
+        try:
+            ok, reason = check_gate(db, "slash_commands")
+            # in_channel visibility is also re-evaluated at delivery time: if
+            # an admin turns public answers off while generation is in
+            # flight, the answer is downgraded to ephemeral, never posted
+            # publicly with stale permission.
+            if ok and in_channel and not parse_features(get_integration(db)).get("slash_in_channel"):
+                in_channel = False
+                _audit_skip("slash_commands", "in_channel_downgraded", None)
+            db.commit()
+        finally:
+            db.close()
+        if not ok:
+            _audit_skip("slash_commands", reason, None)
+            return False
+        import httpx
+
+        payload = {
+            "response_type": "in_channel" if in_channel else "ephemeral",
+            "text": text[:3000],
+            "blocks": blocks or text_blocks(text),
+        }
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.post(response_url, json=payload)
+        if r.status_code == 200:
+            return True
+        _audit_skip("slash_commands", f"send_failed:http_{r.status_code}", None)
+        return False
+    except Exception:
+        logger.exception("Slack command response failed")
+        return False
 
 
 # ---------- Block Kit helpers ----------
@@ -665,7 +727,7 @@ def generate_manifest(db: Session) -> dict:
     if features.get("channel_mentions"):
         manifest["oauth_config"]["scopes"]["bot"].append("app_mentions:read")
         manifest["settings"]["event_subscriptions"]["bot_events"].append("app_mention")
-    if commands and features.get("dm_chat"):
+    if commands and features.get("slash_commands"):
         manifest["oauth_config"]["scopes"]["bot"].append("commands")
         manifest["features"]["slash_commands"] = [
             {
