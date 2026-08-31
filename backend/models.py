@@ -66,9 +66,6 @@ class ActivityLog(Base):
 
 class Feedback(Base):
     __tablename__ = "feedback"
-    __table_args__ = (
-        UniqueConstraint("message_id", "username", name="uq_feedback_message_rater"),
-    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     message_id: Mapped[str] = mapped_column(
