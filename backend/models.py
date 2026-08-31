@@ -350,6 +350,18 @@ class SlackDmNotice(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 
+class SlackEventDedup(Base):
+    """Durable record of a handled inbound Slack event id. The unique
+    constraint makes event handling idempotent across Slack retries AND app
+    restarts — insert-first, handle only if the insert stuck. Rows older than
+    the dedup TTL are purged opportunistically on new inserts."""
+
+    __tablename__ = "slack_event_dedup"
+
+    event_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
 class SlackUserPref(Base):
     """Per-employee Slack notification consent + resolved Slack identity.
 

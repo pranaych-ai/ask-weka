@@ -15,15 +15,15 @@ import logging
 import os
 import re
 import time
-from collections import OrderedDict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Request, Response
+from sqlalchemy.exc import IntegrityError
 
 from . import alerts
 from .audit import log_event, log_event_standalone
 from .db import SessionLocal
-from .models import Conversation, Message, SlackChannel, SlackDmNotice
+from .models import Conversation, Message, SlackChannel, SlackDmNotice, SlackEventDedup
 from .prompts import build_system_prompt
 from . import slack_service as svc
 
@@ -34,10 +34,36 @@ router = APIRouter(prefix="/api/slack")
 SLACK_API = "https://slack.com/api"
 HISTORY_BUDGET = 30
 
-# Slack retries deliveries; remember recently-seen event ids (per process —
-# good enough for the single-instance POC).
-_seen_events: "OrderedDict[str, float]" = OrderedDict()
-_SEEN_MAX = 1000
+# Slack retries deliveries; handled event ids are recorded durably in the
+# slack_event_dedup table (insert-first) so a retry is ignored even across an
+# app restart. Rows older than the TTL are purged opportunistically.
+_DEDUP_TTL_SECONDS = 6 * 3600  # Slack retries within minutes; keep a wide margin
+
+
+def _event_already_seen(event_id: str) -> bool:
+    """Durably claim `event_id`. True means a retry of an event some process
+    already claimed (possibly before a restart) — the caller must skip it.
+
+    Insert-first: the unique primary key is the idempotency guarantee. Old
+    rows past the TTL are cleaned up in the same transaction. On any database
+    failure, fail open (handle the event) — answering twice is better than a
+    hard outage never answering at all."""
+    db = SessionLocal()
+    try:
+        cutoff = datetime.now(timezone.utc) - timedelta(seconds=_DEDUP_TTL_SECONDS)
+        db.query(SlackEventDedup).filter(SlackEventDedup.created_at < cutoff).delete()
+        db.add(SlackEventDedup(event_id=event_id))
+        db.commit()
+        return False
+    except IntegrityError:
+        db.rollback()
+        return True
+    except Exception:
+        db.rollback()
+        logger.exception("Slack event dedup check failed; handling event anyway")
+        return False
+    finally:
+        db.close()
 
 # One lock per DM channel: messages are answered strictly in order and two
 # simultaneous DMs can never race on the channel→conversation mapping.
@@ -491,12 +517,8 @@ async def slack_events(request: Request):
         return Response(status_code=403)
 
     event_id = payload.get("event_id", "")
-    if event_id:
-        if event_id in _seen_events:
-            return {"ok": True}  # retry of an event we already handled
-        _seen_events[event_id] = time.time()
-        while len(_seen_events) > _SEEN_MAX:
-            _seen_events.popitem(last=False)
+    if event_id and _event_already_seen(event_id):
+        return {"ok": True}  # retry of an event we already handled
 
     event = payload.get("event") or {}
     features = cfg["features"]

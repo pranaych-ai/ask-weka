@@ -23,6 +23,7 @@ from backend.models import (
     Conversation,
     SlackChannel,
     SlackDmNotice,
+    SlackEventDedup,
     SlackIntegration,
     SlackUserPref,
 )
@@ -67,6 +68,7 @@ def _enable(monkeypatch, features: dict | None = None, app_id: str = "ATEST"):
         db.merge(row)
         db.query(SlackDmNotice).delete()
         db.query(SlackUserPref).delete()
+        db.query(SlackEventDedup).delete()
         db.commit()
     finally:
         db.close()
@@ -585,6 +587,89 @@ def test_dm_disabled_notice_once_per_day(monkeypatch):
         assert db.query(SlackDmNotice).filter(
             SlackDmNotice.slack_user_id == "U77"
         ).count() == 1
+    finally:
+        db.close()
+
+
+# ---------- Restart-survivable event dedup ----------
+
+
+def test_duplicate_event_id_answered_once(monkeypatch):
+    _enable(monkeypatch)
+    _patch_provider(monkeypatch)
+    calls = []
+    _patch_api(monkeypatch, calls)
+
+    event = {
+        "type": "event_callback",
+        "event_id": "EvDup1",
+        "event": {
+            "type": "message", "channel_type": "im", "channel": "DDUP",
+            "user": "U9", "text": "what is the vpn?", "ts": "9.0",
+        },
+    }
+    assert _signed_post(event).status_code == 200
+    assert _wait_for(calls, "chat.postMessage")
+    # Slack retries the exact same delivery.
+    assert _signed_post(event).status_code == 200
+    time.sleep(0.5)
+    posts = [m for m, _ in calls if m == "chat.postMessage"]
+    assert len(posts) == 1
+
+
+def test_dedup_survives_restart(monkeypatch):
+    """A retried event id is ignored even after the app restarts: the claim
+    lives in the database, not process memory."""
+    _enable(monkeypatch)
+    _patch_provider(monkeypatch)
+    calls = []
+    _patch_api(monkeypatch, calls)
+
+    event = {
+        "type": "event_callback",
+        "event_id": "EvRestart1",
+        "event": {
+            "type": "message", "channel_type": "im", "channel": "DRST",
+            "user": "U9", "text": "hello", "ts": "10.0",
+        },
+    }
+    assert _signed_post(event).status_code == 200
+    assert _wait_for(calls, "chat.postMessage")
+    n_posts = len([m for m, _ in calls if m == "chat.postMessage"])
+
+    # "Restart": nothing in-process survives; only the DB row does.
+    db = SessionLocal()
+    try:
+        assert db.get(SlackEventDedup, "EvRestart1") is not None
+    finally:
+        db.close()
+
+    assert _signed_post(event).status_code == 200
+    time.sleep(0.5)
+    assert len([m for m, _ in calls if m == "chat.postMessage"]) == n_posts
+
+
+def test_dedup_rows_expire(monkeypatch):
+    """Rows older than the TTL are purged when a new event is claimed."""
+    from datetime import datetime, timedelta, timezone
+
+    _enable(monkeypatch)
+    db = SessionLocal()
+    try:
+        db.add(SlackEventDedup(
+            event_id="EvOld1",
+            created_at=datetime.now(timezone.utc)
+            - timedelta(seconds=slack_module._DEDUP_TTL_SECONDS + 60),
+        ))
+        db.commit()
+    finally:
+        db.close()
+
+    assert slack_module._event_already_seen("EvFresh1") is False
+    db = SessionLocal()
+    try:
+        assert db.get(SlackEventDedup, "EvOld1") is None
+        assert db.get(SlackEventDedup, "EvFresh1") is not None
     finally:
         db.close()
 
