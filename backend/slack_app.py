@@ -13,15 +13,17 @@ import hashlib
 import hmac
 import logging
 import os
+import re
 import time
 from collections import OrderedDict
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Request, Response
 
 from . import alerts
-from .audit import log_event
+from .audit import log_event, log_event_standalone
 from .db import SessionLocal
-from .models import Conversation, Message, SlackChannel
+from .models import Conversation, Message, SlackChannel, SlackDmNotice
 from .prompts import build_system_prompt
 from . import slack_service as svc
 
@@ -49,28 +51,43 @@ def _channel_lock(channel: str) -> asyncio.Lock:
     return lock
 
 
-def _slack_enabled() -> bool:
-    """Inbound endpoints exist only when credentials are set (Replit Secrets).
+def _inbound_config() -> dict | None:
+    """Non-secret inbound routing state, or None when inbound Slack is off.
 
-    DM chat additionally honors the database-managed configuration (master
-    switch + dm_chat feature toggle); with no config row yet the defaults
-    keep existing behavior working (credential fallback)."""
+    Admission (credentials + admin master switch) is separated from
+    per-feature gating: the endpoint exists whenever the integration is
+    active, and each event type is then routed by its own feature flag."""
     if not svc.creds_configured():
-        return False
+        return None
     db = SessionLocal()
     try:
         row = svc.get_integration(db)
-        ok = row.enabled and svc.parse_features(row).get("dm_chat", True)
+        cfg = {
+            "enabled": row.enabled,
+            "verified": row.verified,
+            "features": svc.parse_features(row),
+            "app_id": row.app_id,
+            "bot_user_id": row.bot_user_id,
+        }
         db.commit()
-        return ok
+        # Inbound admission requires the admin master switch AND a verified
+        # integration — a failed (re-)verification also clears the app-ID
+        # pin, so stale verification state can never keep accepting events.
+        return cfg if (cfg["enabled"] and cfg["verified"]) else None
     except Exception:
         # The database-backed master switch is authoritative once credentials
         # exist. If its state cannot be read, fail closed rather than risk
         # accepting events after an administrator disabled Slack.
         logger.exception("Slack config check failed — inbound Slack disabled")
-        return False
+        return None
     finally:
         db.close()
+
+
+def _slack_enabled() -> bool:
+    """Inbound endpoints exist only when credentials are set (Replit Secrets)
+    and the admin master switch is on."""
+    return _inbound_config() is not None
 
 
 def _verify_signature(body: bytes, timestamp: str, signature: str) -> bool:
@@ -133,12 +150,67 @@ def _conversation_for_channel(db, channel_id: str, username: str) -> Conversatio
     return conv
 
 
-async def _answer_dm(channel: str, slack_user: str, text: str) -> None:
+async def _react(method: str, channel: str, ts: str) -> None:
+    """Best-effort eyes reaction management — never blocks or fails an answer."""
+    if not ts:
+        return
+    try:
+        await _slack_call(method, {"channel": channel, "timestamp": ts, "name": "eyes"})
+    except Exception:
+        logger.debug("Slack reaction %s failed (non-fatal)", method, exc_info=True)
+
+
+def _record_identity(email: str, slack_user: str) -> None:
+    """First-contact identity capture: refresh the employee's Slack identity
+    for future opted-in notifications without granting any consent."""
+    try:
+        db = SessionLocal()
+        try:
+            svc.upsert_slack_identity(db, email, slack_user)
+            db.commit()
+        finally:
+            db.close()
+    except Exception:
+        logger.exception("Slack identity upsert failed (non-fatal)")
+
+
+def _audit_inbound(username: str, kind: str, ok: bool) -> None:
+    # Metadata only — never the question text.
+    log_event_standalone(
+        username or "unknown", "slack.inbound", f"type={kind} ok={'true' if ok else 'false'}"
+    )
+
+
+async def _generate_answer(history: list[dict]) -> tuple[str, list[tuple[str, str]]]:
+    """The shared protected answer pipeline: same system prompt, knowledge
+    scope, provider, and output safety gate as web chat. Returns the answer
+    (already replaced by the safe refusal if blocked) plus safety events."""
+    from .ai_safety import SAFE_REFUSAL, screen_answer
+    from .providers import get_provider
+
+    provider = get_provider()
+    system = build_system_prompt("")
+    parts: list[str] = []
+    async for chunk in provider.stream_chat(system, history):
+        parts.append(chunk)
+    answer = "".join(parts).strip()
+    if not answer:
+        raise RuntimeError("Empty answer from model")
+    safety_events: list[tuple[str, str]] = []
+    gate = screen_answer(answer)
+    if gate.blocked:
+        answer = SAFE_REFUSAL
+        safety_events.append(("chat.safety_blocked", ",".join(gate.findings)))
+    return answer, safety_events
+
+
+async def _answer_dm(channel: str, slack_user: str, text: str, ts: str = "") -> None:
     async with _channel_lock(channel):
-        await _answer_dm_inner(channel, slack_user, text)
+        await _answer_dm_inner(channel, slack_user, text, ts)
 
 
-async def _answer_dm_inner(channel: str, slack_user: str, text: str) -> None:
+async def _answer_dm_inner(channel: str, slack_user: str, text: str, ts: str = "") -> None:
+    email = ""
     try:
         email = await _resolve_email(slack_user)
         if not email:
@@ -148,9 +220,13 @@ async def _answer_dm_inner(channel: str, slack_user: str, text: str) -> None:
                 "Sorry — I can only help verified WEKA employees, and I couldn't "
                 "confirm your account. Please contact #it-help.",
             )
+            _audit_inbound("", "dm", False)
             return
 
-        from .ai_safety import SAFE_REFUSAL, screen_answer, screen_question
+        _record_identity(email, slack_user)
+        await _react("reactions.add", channel, ts)
+
+        from .ai_safety import screen_question
 
         db = SessionLocal()
         try:
@@ -176,23 +252,7 @@ async def _answer_dm_inner(channel: str, slack_user: str, text: str) -> None:
         finally:
             db.close()
 
-        from .providers import get_provider
-
-        provider = get_provider()
-        system = build_system_prompt("")
-        parts: list[str] = []
-        async for chunk in provider.stream_chat(system, history):
-            parts.append(chunk)
-        answer = "".join(parts).strip()
-        if not answer:
-            raise RuntimeError("Empty answer from model")
-
-        # Output safety gate before anything is persisted or sent to Slack.
-        safety_events: list[tuple[str, str]] = []
-        gate = screen_answer(answer)
-        if gate.blocked:
-            answer = SAFE_REFUSAL
-            safety_events.append(("chat.safety_blocked", ",".join(gate.findings)))
+        answer, safety_events = await _generate_answer(history)
 
         db = SessionLocal()
         try:
@@ -216,11 +276,15 @@ async def _answer_dm_inner(channel: str, slack_user: str, text: str) -> None:
         finally:
             db.close()
 
-        await svc.notify_direct_channel("dm_chat", channel, answer[:39000])
+        await svc.notify_direct_channel(
+            "dm_chat", channel, answer[:39000], blocks=svc.answer_blocks(answer[:11000])
+        )
+        _audit_inbound(email, "dm", True)
     except Exception as e:
         logger.exception("Slack DM handling failed")
         # Slack DM failures never surface as 5xx responses; alert explicitly.
         alerts.record_ai_failure(f"Slack DM: {type(e).__name__}")
+        _audit_inbound(email, "dm", False)
         try:
             await svc.notify_direct_channel(
                 "dm_chat",
@@ -230,11 +294,163 @@ async def _answer_dm_inner(channel: str, slack_user: str, text: str) -> None:
             )
         except Exception:
             logger.exception("Slack error notification failed")
+    finally:
+        await _react("reactions.remove", channel, ts)
+
+
+async def _dm_disabled_notice(channel: str, slack_user: str) -> None:
+    """DM chat is off: point the employee at the web app AT MOST once per
+    day. The durable insert happens before the send so Slack retries and app
+    restarts can never spam an employee."""
+    try:
+        email = await _resolve_email(slack_user)
+        if not email:
+            return
+        _record_identity(email, slack_user)
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        db = SessionLocal()
+        try:
+            db.add(SlackDmNotice(slack_user_id=slack_user, notice_date=today))
+            db.commit()
+        except Exception:
+            db.rollback()
+            return  # already notified today — stay silent
+        finally:
+            db.close()
+        await svc.send_inbound_notice(
+            channel,
+            "Slack chat is currently turned off — you can ask me anything at "
+            f"{svc.public_base_url()}",
+        )
+        _audit_inbound(email, "dm_disabled_notice", True)
+    except Exception:
+        logger.exception("Slack disabled-DM notice failed")
+
+
+def _strip_mentions(text: str, bot_user_id: str = "") -> str:
+    """Remove only the configured bot's own mention token; mentions of other
+    users are legitimate question content and are preserved."""
+    if bot_user_id:
+        return re.sub(rf"<@{re.escape(bot_user_id)}(\|[^>]*)?>", "", text or "").strip()
+    return re.sub(r"<@[A-Z0-9]+(\|[^>]*)?>", "", text or "").strip()
+
+
+async def _answer_mention(
+    channel: str, slack_user: str, raw_text: str, ts: str, thread_ts: str,
+    bot_user_id: str = "",
+) -> None:
+    """Threaded channel mention: fresh single-exchange context — never reads
+    or modifies the employee's DM history or prior channel messages."""
+    reply_ts = thread_ts or ts
+    email = ""
+    try:
+        email = await _resolve_email(slack_user)
+        if not email:
+            await svc.notify_direct_channel(
+                "channel_mentions",
+                channel,
+                "Sorry — I can only help verified WEKA employees, and I couldn't "
+                "confirm your account. Please contact #it-help.",
+                thread_ts=reply_ts,
+            )
+            _audit_inbound("", "mention", False)
+            return
+
+        # A valid employee interaction either way: capture first-contact
+        # identity before branching on whether a question was asked.
+        _record_identity(email, slack_user)
+
+        text = _strip_mentions(raw_text, bot_user_id)
+        if not text:
+            await svc.notify_direct_channel(
+                "channel_mentions",
+                channel,
+                "Hi! Mention me with a question, e.g. `@Ask WEKA how do I request a laptop?`",
+                thread_ts=reply_ts,
+            )
+            _audit_inbound(email, "mention_empty", True)
+            return
+
+        await _react("reactions.add", channel, ts)
+
+        from .ai_safety import screen_question
+
+        db = SessionLocal()
+        try:
+            conv = Conversation(title="Slack mention", username=email, domain="")
+            db.add(conv)
+            db.flush()
+            conv.messages.append(Message(role="user", content=text))
+            log_event(db, email, "conversation.create", f"id={conv.id} via=slack_mention")
+            log_event(db, email, "chat.message", f"conversation_id={conv.id} via=slack_mention")
+            inbound = screen_question(text)
+            if inbound.findings:
+                log_event(
+                    db,
+                    email,
+                    "chat.injection_flagged",
+                    f"conversation_id={conv.id} findings={','.join(inbound.findings)} via=slack_mention",
+                )
+            db.commit()
+            conversation_id = conv.id
+        finally:
+            db.close()
+
+        # Fresh single-exchange context: exactly this one question.
+        answer, safety_events = await _generate_answer([{"role": "user", "content": text}])
+
+        db = SessionLocal()
+        try:
+            msg = Message(conversation_id=conversation_id, role="assistant", content=answer)
+            db.add(msg)
+            db.flush()
+            log_event(
+                db,
+                email,
+                "chat.response",
+                f"conversation_id={conversation_id} message_id={msg.id} via=slack_mention",
+            )
+            for event, findings in safety_events:
+                log_event(
+                    db,
+                    email,
+                    event,
+                    f"conversation_id={conversation_id} findings={findings} via=slack_mention",
+                )
+            db.commit()
+        finally:
+            db.close()
+
+        await svc.notify_direct_channel(
+            "channel_mentions",
+            channel,
+            answer[:39000],
+            blocks=svc.answer_blocks(answer[:11000]),
+            thread_ts=reply_ts,
+        )
+        _audit_inbound(email, "mention", True)
+    except Exception as e:
+        logger.exception("Slack mention handling failed")
+        alerts.record_ai_failure(f"Slack mention: {type(e).__name__}")
+        _audit_inbound(email, "mention", False)
+        try:
+            await svc.notify_direct_channel(
+                "channel_mentions",
+                channel,
+                "Sorry — something went wrong answering that. Please try again, "
+                "or ask in #it-help / #hr-help.",
+                thread_ts=reply_ts,
+            )
+        except Exception:
+            logger.exception("Slack mention error notification failed")
+    finally:
+        await _react("reactions.remove", channel, ts)
 
 
 @router.post("/events")
 async def slack_events(request: Request):
-    if not _slack_enabled():
+    cfg = _inbound_config()
+    if cfg is None:
         return Response(status_code=404)
 
     body = await request.body()
@@ -259,6 +475,20 @@ async def slack_events(request: Request):
     if payload.get("type") != "event_callback":
         return {"ok": True}
 
+    # Only the verified configured Slack app may deliver events. Fail closed:
+    # verification pins the app ID, and until it is pinned — or when the
+    # payload's api_app_id is anything other than that exact ID, including
+    # omitted — the event is rejected.
+    api_app_id = str(payload.get("api_app_id") or "")
+    if not cfg["app_id"] or api_app_id != cfg["app_id"]:
+        log_event_standalone(
+            "system",
+            "slack.reject",
+            "reason=app_id_unpinned" if not cfg["app_id"]
+            else f"reason=app_id_mismatch app_id={api_app_id[:30] or 'missing'}",
+        )
+        return Response(status_code=403)
+
     event_id = payload.get("event_id", "")
     if event_id:
         if event_id in _seen_events:
@@ -268,19 +498,39 @@ async def slack_events(request: Request):
             _seen_events.popitem(last=False)
 
     event = payload.get("event") or {}
-    # Only fresh 1:1 messages from humans — no channels, edits, or bot echoes.
-    if (
-        event.get("type") == "message"
-        and event.get("channel_type") == "im"
-        and not event.get("bot_id")
+    features = cfg["features"]
+    fresh_human = (
+        not event.get("bot_id")
         and not event.get("subtype")
         and (event.get("text") or "").strip()
         and event.get("user")
         and event.get("channel")
-    ):
+    )
+    # Fresh 1:1 messages from humans — no edits or bot echoes.
+    if event.get("type") == "message" and event.get("channel_type") == "im" and fresh_human:
         # Ack within Slack's 3s window; answer in the background.
+        if features.get("dm_chat"):
+            asyncio.get_running_loop().create_task(
+                _answer_dm(
+                    event["channel"], event["user"], event["text"].strip(),
+                    event.get("ts", ""),
+                )
+            )
+        else:
+            asyncio.get_running_loop().create_task(
+                _dm_disabled_notice(event["channel"], event["user"])
+            )
+    # Channel mentions — independently gated, threaded reply.
+    elif event.get("type") == "app_mention" and fresh_human and features.get("channel_mentions"):
         asyncio.get_running_loop().create_task(
-            _answer_dm(event["channel"], event["user"], event["text"].strip())
+            _answer_mention(
+                event["channel"],
+                event["user"],
+                event["text"],
+                event.get("ts", ""),
+                event.get("thread_ts", ""),
+                cfg["bot_user_id"],
+            )
         )
 
     return {"ok": True}

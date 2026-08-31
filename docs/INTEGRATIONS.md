@@ -99,8 +99,15 @@ Outbound domain: `https://slack.com` (Web API) — the only Slack egress.
 - **Verification**: server-side `auth.test`; only non-secret workspace/bot
   metadata and status are stored.
 - **Inbound**: all Slack endpoints verify the `v0` HMAC signature and a 5-min
-  replay window. DM chat resolves the sender's WEKA email via `users.info`
-  (domain-allowlisted) and reuses the normal chat pipeline + audit trail.
+  replay window; event callbacks whose `api_app_id` conflicts with the app ID
+  captured at verification time are rejected. DM chat and channel mentions
+  are independently feature-gated by the admin. Both resolve the sender's
+  WEKA email via `users.info` (domain-allowlisted) and reuse the normal chat
+  pipeline, AI safety gates, and audit trail (metadata only — no question
+  text). Mentions get a fresh single-exchange context and a threaded reply;
+  when DM chat is disabled the bot points at the web app at most once per
+  employee per day. Answers are Slack-formatted with an "Open Ask WEKA"
+  button, with a temporary eyes reaction while generating.
 - **Outbound data flow**: ticket confirmations (title + Jira/Ask WEKA links)
   to the ticket owner, golden-run summaries to the initiating admin, optional
   regression posts, sync-failure alerts to the opted-in initiating admin plus

@@ -198,6 +198,19 @@ with engine.begin() as _conn:
                 "ALTER TABLE tickets ADD COLUMN jira_url VARCHAR(300) NOT NULL DEFAULT ''"
             )
 
+    # slack_integration.app_id — verified Slack app identity for inbound events
+    if _dialect == "postgresql":
+        _conn.execute(_text(
+            "ALTER TABLE slack_integration ADD COLUMN IF NOT EXISTS "
+            "app_id VARCHAR(30) NOT NULL DEFAULT ''"
+        ))
+    else:
+        _scols = [r[1] for r in _conn.exec_driver_sql("PRAGMA table_info(slack_integration)")]
+        if _scols and "app_id" not in _scols:
+            _conn.exec_driver_sql(
+                "ALTER TABLE slack_integration ADD COLUMN app_id VARCHAR(30) NOT NULL DEFAULT ''"
+            )
+
     # Unique history versions per KB section (works on postgres and sqlite)
     _conn.execute(_text(
         "CREATE UNIQUE INDEX IF NOT EXISTS uq_kb_section_version "

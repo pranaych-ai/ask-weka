@@ -312,6 +312,9 @@ class SlackIntegration(Base):
     workspace_url: Mapped[str] = mapped_column(String(300), default="")
     bot_user_id: Mapped[str] = mapped_column(String(30), default="")
     bot_name: Mapped[str] = mapped_column(String(200), default="")
+    # Slack app ID captured at verification time (non-secret). Inbound events
+    # carrying a different api_app_id are rejected.
+    app_id: Mapped[str] = mapped_column(String(30), default="")
     last_verified_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
@@ -329,6 +332,22 @@ class SlackIntegration(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_now, onupdate=_now
     )
+
+
+class SlackDmNotice(Base):
+    """Durable once-per-day record of the "DM chat is disabled" notice sent
+    to a Slack user. The unique constraint makes the notice idempotent across
+    Slack retries and app restarts — insert-first, send only if it stuck."""
+
+    __tablename__ = "slack_dm_notices"
+    __table_args__ = (
+        UniqueConstraint("slack_user_id", "notice_date", name="uq_slack_dm_notice"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    slack_user_id: Mapped[str] = mapped_column(String(30), index=True)
+    notice_date: Mapped[str] = mapped_column(String(10))  # UTC YYYY-MM-DD
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 
 class SlackUserPref(Base):

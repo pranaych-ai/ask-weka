@@ -62,8 +62,16 @@ Internal AI assistant for WEKA employees (HR/IT questions over the internal know
   atomic conditional UPDATE on `slack_integration.digest_last_run`, so
   restarts never double-post.
 - **Inbound**: Slack event/command/interactivity endpoints verify the v0
-  HMAC signature and replay window before any processing; DM chat honors the
-  DB-managed feature config with env-credential fallback.
+  HMAC signature and replay window before any processing, and reject event
+  callbacks whose `api_app_id` conflicts with the app ID captured at
+  verification. Admission (credentials + master switch) is separated from
+  per-feature routing: DM chat and channel mentions each honor their own
+  admin feature flag. Mentions answer in-thread with a fresh single-exchange
+  context (never DM or channel history); when DM chat is disabled a durable
+  once-per-day record (`slack_dm_notices`) gates a single web-app pointer.
+  A first valid DM/mention upserts the employee's Slack identity without
+  changing consent. Inbound interactions audit metadata only (`slack.inbound`
+  username/type/success — never question text).
 - **RBAC**: `/api/admin/slack/*` is admin-only (centrally audited);
   `/api/slack/prefs` requires an authenticated employee and only exposes
   administrator-enabled, opt-in features.

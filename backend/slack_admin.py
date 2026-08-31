@@ -39,6 +39,7 @@ def _config_out(db: Session) -> dict:
         "workspace_url": row.workspace_url,
         "bot_user_id": row.bot_user_id,
         "bot_name": row.bot_name,
+        "app_id": row.app_id,
         "last_verified_at": row.last_verified_at.isoformat() if row.last_verified_at else None,
         "last_verify_error": row.last_verify_error,
         "features": svc.parse_features(row),

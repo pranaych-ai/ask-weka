@@ -39,6 +39,12 @@ FEATURES: dict[str, dict] = {
         "user_optin": False,
         "default": True,
     },
+    "channel_mentions": {
+        "label": "Channel mentions",
+        "description": "Employees can @mention the bot in a channel it was invited to and get a threaded answer.",
+        "user_optin": False,
+        "default": False,
+    },
     "ticket_notifications": {
         "label": "Ticket notifications",
         "description": "DM an employee when their ticket is filed (Jira + Ask WEKA links).",
@@ -195,20 +201,57 @@ async def verify_connection(db: Session) -> SlackIntegration:
     row = get_integration(db)
     if not creds_configured():
         row.verified = False
+        row.app_id = ""  # never keep a stale pin past a failed verification
         row.last_verify_error = "Slack credentials are not set in Replit Secrets"
         return row
     data = await slack_api("auth.test")
     if not data.get("ok"):
         row.verified = False
+        row.app_id = ""
         row.last_verify_error = str(data.get("error", "unknown_error"))[:300]
         return row
+    bot_user_id = str(data.get("user_id", ""))[:30]
+
+    # Pin the Slack app ID as part of verification. This is mandatory:
+    # inbound event callbacks are rejected until an app ID is pinned, so a
+    # verification that cannot establish the app identity fails closed.
+    # Primary (documented) path: auth.test's bot_id -> bots.info -> bot.app_id.
+    # Fallback: the bot user's profile (api_app_id / bot_id) via users.info.
+    app_id = ""
+    try:
+        bot_id = str(data.get("bot_id") or "")
+        if bot_id:
+            binfo = await slack_api("bots.info", {"bot": bot_id})
+            if binfo.get("ok"):
+                app_id = str((binfo.get("bot") or {}).get("app_id") or "")
+        if not app_id:
+            info = await slack_api("users.info", {"user": bot_user_id})
+            profile = (info.get("user") or {}).get("profile") or {}
+            if info.get("ok"):
+                app_id = str(profile.get("api_app_id") or "")
+                if not app_id and profile.get("bot_id"):
+                    binfo = await slack_api("bots.info", {"bot": profile["bot_id"]})
+                    if binfo.get("ok"):
+                        app_id = str((binfo.get("bot") or {}).get("app_id") or "")
+    except Exception:
+        logger.exception("Slack app-id lookup failed")
+    if not app_id:
+        row.verified = False
+        row.app_id = ""
+        row.last_verify_error = (
+            "Could not determine the Slack app ID for this bot token — "
+            "re-install the app and verify again"
+        )
+        return row
+
     row.verified = True
     row.last_verify_error = ""
     row.team_id = str(data.get("team_id", ""))[:30]
     row.team_name = str(data.get("team", ""))[:200]
     row.workspace_url = str(data.get("url", ""))[:300]
-    row.bot_user_id = str(data.get("user_id", ""))[:30]
+    row.bot_user_id = bot_user_id
     row.bot_name = str(data.get("user", ""))[:200]
+    row.app_id = app_id[:30]
     row.last_verified_at = datetime.now(timezone.utc)
     return row
 
@@ -258,6 +301,47 @@ def _audit_skip(feature: str, reason: str, username: str | None) -> None:
 
 def text_blocks(text: str) -> list[dict]:
     return [{"type": "section", "text": {"type": "mrkdwn", "text": text[:2900]}}]
+
+
+def to_slack_mrkdwn(text: str) -> str:
+    """Convert model markdown to Slack's mrkdwn dialect (best effort).
+
+    Links, bold, headings, and bullets — the constructs the assistant
+    actually emits. Never raises; formatting is presentation-only."""
+    import re
+
+    try:
+        out = re.sub(r"\[([^\]]+)\]\((https?://[^)\s]+)\)", r"<\2|\1>", text)
+        out = re.sub(r"\*\*(.+?)\*\*", r"*\1*", out)
+        out = re.sub(r"(?<![\w_])__(.+?)__(?![\w_])", r"*\1*", out)
+        out = re.sub(r"^#{1,6}\s*(.+)$", r"*\1*", out, flags=re.M)
+        out = re.sub(r"^(\s*)[-*+]\s+", r"\1• ", out, flags=re.M)
+        return out
+    except Exception:
+        return text
+
+
+def answer_blocks(text: str) -> list[dict]:
+    """Slack-formatted answer sections plus a button back to Ask WEKA."""
+    mrkdwn = to_slack_mrkdwn(text)
+    blocks: list[dict] = [
+        {"type": "section", "text": {"type": "mrkdwn", "text": chunk}}
+        for chunk in (mrkdwn[i : i + 2900] for i in range(0, min(len(mrkdwn), 2900 * 4), 2900))
+        if chunk
+    ] or text_blocks(mrkdwn)
+    blocks.append(
+        {
+            "type": "actions",
+            "elements": [
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "Open Ask WEKA"},
+                    "url": public_base_url(),
+                }
+            ],
+        }
+    )
+    return blocks
 
 
 # ---------- Outbound sends (best-effort; never raise to callers) ----------
@@ -343,7 +427,11 @@ async def notify_channel(feature: str, text: str, blocks: list[dict] | None = No
 
 
 async def notify_direct_channel(
-    feature: str, channel: str, text: str, blocks: list[dict] | None = None
+    feature: str,
+    channel: str,
+    text: str,
+    blocks: list[dict] | None = None,
+    thread_ts: str = "",
 ) -> bool:
     """Post to a known Slack channel/DM while re-evaluating the central gate.
 
@@ -362,6 +450,42 @@ async def notify_direct_channel(
         if not ok:
             _audit_skip(feature, reason, None)
             return False
+        payload = {
+            "channel": channel,
+            "text": text[:3000],
+            "blocks": blocks or text_blocks(text),
+            "unfurl_links": False,
+        }
+        if thread_ts:
+            payload["thread_ts"] = thread_ts
+        data = await slack_api("chat.postMessage", payload)
+        if data.get("ok"):
+            log_event_standalone("system", "slack.notify", f"feature={feature} kind=direct")
+            return True
+        _audit_skip(feature, f"send_failed:{data.get('error', 'unknown')}", None)
+        return False
+    except Exception:
+        logger.exception("Slack direct notification failed (feature=%s)", feature)
+        return False
+
+
+async def send_inbound_notice(channel: str, text: str, blocks: list[dict] | None = None) -> bool:
+    """Post a service notice to a channel gated on the master switch only.
+
+    Used for the once-daily "DM chat is disabled" pointer — by definition
+    the dm_chat feature is off, so the per-feature gate cannot apply, but the
+    admin master switch, verification, and env credentials still must hold."""
+    try:
+        db = SessionLocal()
+        try:
+            row = get_integration(db)
+            ok = creds_configured() and row.enabled and row.verified
+            db.commit()
+        finally:
+            db.close()
+        if not ok:
+            _audit_skip("dm_chat", "integration_inactive", None)
+            return False
         data = await slack_api(
             "chat.postMessage",
             {
@@ -372,13 +496,28 @@ async def notify_direct_channel(
             },
         )
         if data.get("ok"):
-            log_event_standalone("system", "slack.notify", f"feature={feature} kind=direct")
+            log_event_standalone("system", "slack.notify", "feature=dm_chat kind=disabled_notice")
             return True
-        _audit_skip(feature, f"send_failed:{data.get('error', 'unknown')}", None)
+        _audit_skip("dm_chat", f"send_failed:{data.get('error', 'unknown')}", None)
         return False
     except Exception:
-        logger.exception("Slack direct notification failed (feature=%s)", feature)
+        logger.exception("Slack disabled-DM notice failed")
         return False
+
+
+def upsert_slack_identity(db: Session, username: str, slack_user_id: str) -> None:
+    """Record/refresh a WEKA-verified employee's Slack identity after an
+    inbound interaction. Never touches consent preferences — recording the
+    identity does not opt the employee into any outbound feature."""
+    if not username or not slack_user_id:
+        return
+    pref = db.get(SlackUserPref, username)
+    if not pref:
+        pref = SlackUserPref(username=username)
+        db.add(pref)
+    pref.slack_user_id = slack_user_id
+    if not pref.slack_email:
+        pref.slack_email = username
 
 
 async def notify_source_sync_failure(admin_username: str, text: str) -> bool:
@@ -520,6 +659,12 @@ def generate_manifest(db: Session) -> dict:
             "token_rotation_enabled": False,
         },
     }
+    if features.get("dm_chat") or features.get("channel_mentions"):
+        # The eyes reaction while an answer is being generated.
+        manifest["oauth_config"]["scopes"]["bot"].append("reactions:write")
+    if features.get("channel_mentions"):
+        manifest["oauth_config"]["scopes"]["bot"].append("app_mentions:read")
+        manifest["settings"]["event_subscriptions"]["bot_events"].append("app_mention")
     if commands and features.get("dm_chat"):
         manifest["oauth_config"]["scopes"]["bot"].append("commands")
         manifest["features"]["slash_commands"] = [

@@ -266,6 +266,8 @@ def test_verify_stores_only_nonsecret_metadata(monkeypatch):
     _reset_integration(verified=False)
 
     async def fake_api(method, payload=None, **kw):
+        if method == "users.info":
+            return {"ok": True, "user": {"profile": {"api_app_id": "A42"}}}
         assert method == "auth.test"
         return {
             "ok": True, "team_id": "T42", "team": "WEKA", "url": "https://weka.slack.com/",
