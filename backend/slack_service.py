@@ -53,7 +53,25 @@ FEATURES: dict[str, dict] = {
     },
     "slash_in_channel": {
         "label": "Slash answers visible in channel",
-        "description": "Post /askweka answers to the whole channel instead of only to the asker (ephemeral).",
+        "description": "Allow an asker to publish an ephemeral slash answer with the reviewed Post to channel action.",
+        "user_optin": False,
+        "default": False,
+    },
+    "interactivity": {
+        "label": "Interactive answer actions",
+        "description": "Enable feedback, reviewed channel posting, and ticket-review modals on Slack answers.",
+        "user_optin": False,
+        "default": False,
+    },
+    "thread_summaries": {
+        "label": "Thread catch-up and summaries",
+        "description": "Let opted-in employees summarize the current thread or up to 24 hours of the current channel.",
+        "user_optin": True,
+        "default": False,
+    },
+    "link_unfurl": {
+        "label": "Ask WEKA link previews",
+        "description": "Show metadata-only previews for links on this Ask WEKA deployment domain.",
         "user_optin": False,
         "default": False,
     },
@@ -101,6 +119,8 @@ DEFAULT_COMMANDS = [
         "command": "/askweka",
         "description": "Ask the WEKA assistant a question",
         "usage_hint": "How do I request a laptop?",
+        "domain": "",
+        "instructions": "",
     }
 ]
 
@@ -157,6 +177,9 @@ def parse_commands(row: SlackIntegration) -> list[dict]:
                     "command": str(c.get("command", ""))[:32],
                     "description": str(c.get("description", ""))[:100],
                     "usage_hint": str(c.get("usage_hint", ""))[:100],
+                    "domain": str(c.get("domain", ""))[:20]
+                    if str(c.get("domain", "")) in ("", "IT", "HR") else "",
+                    "instructions": str(c.get("instructions", ""))[:2000],
                 }
             )
     return out
@@ -365,6 +388,20 @@ def text_blocks(text: str) -> list[dict]:
     return [{"type": "section", "text": {"type": "mrkdwn", "text": text[:2900]}}]
 
 
+def notification_blocks(text: str) -> list[dict]:
+    blocks = text_blocks(text)
+    blocks.append({
+        "type": "actions",
+        "elements": [{
+            "type": "button",
+            "text": {"type": "plain_text", "text": "Open in Ask WEKA"},
+            "url": public_base_url(),
+            "action_id": "askweka_open",
+        }],
+    })
+    return blocks
+
+
 def to_slack_mrkdwn(text: str) -> str:
     """Convert model markdown to Slack's mrkdwn dialect (best effort).
 
@@ -383,26 +420,61 @@ def to_slack_mrkdwn(text: str) -> str:
         return text
 
 
-def answer_blocks(text: str) -> list[dict]:
-    """Slack-formatted answer sections plus a button back to Ask WEKA."""
+def answer_blocks(
+    text: str,
+    message_id: str = "",
+    *,
+    allow_post: bool = False,
+    allow_ticket: bool = False,
+) -> list[dict]:
+    """Slack-formatted answer sections and authorized server-side actions.
+
+    Action values contain only the stored assistant-message id. Question,
+    answer, owner, and conversation are always looked up server-side.
+    """
     mrkdwn = to_slack_mrkdwn(text)
     blocks: list[dict] = [
         {"type": "section", "text": {"type": "mrkdwn", "text": chunk}}
         for chunk in (mrkdwn[i : i + 2900] for i in range(0, min(len(mrkdwn), 2900 * 4), 2900))
         if chunk
     ] or text_blocks(mrkdwn)
-    blocks.append(
-        {
-            "type": "actions",
-            "elements": [
-                {
-                    "type": "button",
-                    "text": {"type": "plain_text", "text": "Open Ask WEKA"},
-                    "url": public_base_url(),
-                }
-            ],
-        }
-    )
+    elements = [{
+        "type": "button",
+        "text": {"type": "plain_text", "text": "Open in Ask WEKA"},
+        "url": public_base_url(),
+        "action_id": "askweka_open",
+    }]
+    if message_id:
+        elements.extend([
+            {
+                "type": "button",
+                "text": {"type": "plain_text", "text": "👍"},
+                "action_id": "askweka_feedback_up",
+                "value": message_id,
+            },
+            {
+                "type": "button",
+                "text": {"type": "plain_text", "text": "👎"},
+                "action_id": "askweka_feedback_down",
+                "value": message_id,
+            },
+        ])
+        if allow_post:
+            elements.append({
+                "type": "button",
+                "text": {"type": "plain_text", "text": "Post to channel"},
+                "action_id": "askweka_post_channel",
+                "value": message_id,
+            })
+        if allow_ticket:
+            elements.append({
+                "type": "button",
+                "text": {"type": "plain_text", "text": "Create ticket"},
+                "style": "primary",
+                "action_id": "askweka_ticket_review",
+                "value": message_id,
+            })
+    blocks.append({"type": "actions", "elements": elements})
     return blocks
 
 
@@ -439,7 +511,7 @@ async def notify_user(feature: str, username: str, text: str, blocks: list[dict]
             {
                 "channel": channel,
                 "text": text[:3000],
-                "blocks": blocks or text_blocks(text),
+                "blocks": blocks or notification_blocks(text),
                 "unfurl_links": False,
             },
         )
@@ -528,6 +600,63 @@ async def notify_direct_channel(
         return False
     except Exception:
         logger.exception("Slack direct notification failed (feature=%s)", feature)
+        return False
+
+
+async def post_interactive_answer(
+    channel: str,
+    text: str,
+    assistant_message_id: str,
+) -> bool:
+    """Publish a private slash answer only while every public-post gate holds.
+
+    All three flags are re-read in one DB session immediately before the API
+    call. This fails closed if an admin disables the integration,
+    interactivity, slash commands, or channel posting after answer generation
+    but before the employee clicks the button.
+    """
+    try:
+        db = SessionLocal()
+        try:
+            checks = [
+                check_gate(db, feature)
+                for feature in (
+                    "interactivity",
+                    "slash_commands",
+                    "slash_in_channel",
+                )
+            ]
+            db.commit()
+        finally:
+            db.close()
+        failed = next((reason for ok, reason in checks if not ok), "")
+        if failed:
+            _audit_skip("slash_in_channel", failed, None)
+            return False
+        data = await slack_api(
+            "chat.postMessage",
+            {
+                "channel": channel,
+                "text": text[:3000],
+                "blocks": answer_blocks(text[:11000], assistant_message_id),
+                "unfurl_links": False,
+            },
+        )
+        if data.get("ok"):
+            log_event_standalone(
+                "system",
+                "slack.notify",
+                "feature=slash_in_channel kind=interactive",
+            )
+            return True
+        _audit_skip(
+            "slash_in_channel",
+            f"send_failed:{data.get('error', 'unknown')}",
+            None,
+        )
+        return False
+    except Exception:
+        logger.exception("Slack interactive channel post failed")
         return False
 
 
@@ -693,6 +822,11 @@ def generate_manifest(db: Session) -> dict:
         },
         "features": {
             "bot_user": {"display_name": "Ask WEKA", "always_online": True},
+            "app_home": {
+                "home_tab_enabled": True,
+                "messages_tab_enabled": True,
+                "messages_tab_read_only_enabled": False,
+            },
         },
         "oauth_config": {
             "scopes": {
@@ -714,7 +848,7 @@ def generate_manifest(db: Session) -> dict:
             },
             "interactivity": {
                 "is_enabled": True,
-                "request_url": f"{base}/api/slack/interactions",
+                "request_url": f"{base}/api/slack/interactivity",
             },
             "org_deploy_enabled": False,
             "socket_mode_enabled": False,
@@ -727,6 +861,20 @@ def generate_manifest(db: Session) -> dict:
     if features.get("channel_mentions"):
         manifest["oauth_config"]["scopes"]["bot"].append("app_mentions:read")
         manifest["settings"]["event_subscriptions"]["bot_events"].append("app_mention")
+    if features.get("dm_chat"):
+        manifest["settings"]["event_subscriptions"]["bot_events"].append("app_home_opened")
+    if features.get("link_unfurl"):
+        manifest["oauth_config"]["scopes"]["bot"].extend(["links:read", "links:write"])
+        manifest["settings"]["event_subscriptions"]["bot_events"].append("link_shared")
+        from urllib.parse import urlparse
+
+        domain = urlparse(base).hostname
+        if domain:
+            manifest["settings"]["event_subscriptions"]["link_shared_domains"] = [domain]
+    if features.get("thread_summaries"):
+        manifest["oauth_config"]["scopes"]["bot"].extend(
+            ["channels:history", "groups:history", "mpim:history"]
+        )
     if commands and features.get("slash_commands"):
         manifest["oauth_config"]["scopes"]["bot"].append("commands")
         manifest["features"]["slash_commands"] = [

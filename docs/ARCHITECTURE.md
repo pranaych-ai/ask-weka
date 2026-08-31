@@ -72,6 +72,23 @@ Internal AI assistant for WEKA employees (HR/IT questions over the internal know
   A first valid DM/mention upserts the employee's Slack identity without
   changing consent. Inbound interactions audit metadata only (`slack.inbound`
   username/type/success — never question text).
+- **Slack → API trust boundary**: the three public webhook surfaces are
+  `/api/slack/events`, `/api/slack/commands`, and
+  `/api/slack/interactivity` (legacy `/interactions` alias). Each verifies the
+  HMAC over the untouched raw request body before parsing, rejects timestamps
+  outside five minutes, pins `api_app_id` to the verified app, and acknowledges
+  before slow work. Employee actions are authorized by a fresh Slack
+  `users.info` email lookup and a server-side owned-message lookup. Slack uses
+  the same command domain KB filtering as the portal. Credentials remain only
+  in environment-scoped Replit Secrets; **there is no DB-stored-credentials
+  deviation and no admin credential input**.
+- **Interactive privacy**: thumbs use the same server-secret HMAC rater
+  pseudonym as portal feedback. Ticket actions open an editable approval modal
+  and file through the employee's own `JiraAccount`; they never create a Jira
+  issue directly from a button. Thread catch-up requires both the admin feature
+  flag and employee opt-in, reads at most 200 current-channel/current-thread
+  messages from the last 24 hours, and stores neither source nor summary.
+  Link previews contain deployment/app metadata only.
 - **RBAC**: `/api/admin/slack/*` is admin-only (centrally audited);
   `/api/slack/prefs` requires an authenticated employee and only exposes
   administrator-enabled, opt-in features.

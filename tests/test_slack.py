@@ -12,7 +12,9 @@ import hmac
 import json
 import time
 
+import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy.exc import IntegrityError
 
 import backend.slack_app as slack_module
 import backend.slack_service as svc
@@ -21,6 +23,8 @@ from backend.main import app
 from backend.models import (
     ActivityLog,
     Conversation,
+    Feedback,
+    Message,
     SlackChannel,
     SlackDmNotice,
     SlackEventDedup,
@@ -1062,3 +1066,168 @@ def test_manifest_includes_mention_event_and_scopes(monkeypatch):
         db.close()
     assert "app_mention" not in m2["settings"]["event_subscriptions"]["bot_events"]
     assert "app_mentions:read" not in m2["oauth_config"]["scopes"]["bot"]
+
+
+# ---------- Interactive actions ----------
+
+
+def _signed_interaction_post(payload: dict, secret: str = SECRET, path="/api/slack/interactivity"):
+    from urllib.parse import urlencode
+
+    body = urlencode({"payload": json.dumps(payload)}).encode()
+    ts = str(int(time.time()))
+    sig = "v0=" + hmac.new(
+        secret.encode(), f"v0:{ts}:{body.decode()}".encode(), hashlib.sha256
+    ).hexdigest()
+    return client.post(
+        path,
+        content=body,
+        headers={
+            "Content-Type": "application/x-www-form-urlencoded",
+            "X-Slack-Request-Timestamp": ts,
+            "X-Slack-Signature": sig,
+        },
+    )
+
+
+def test_interactivity_verifies_raw_signature_and_app_id(monkeypatch):
+    _enable(monkeypatch, features={"interactivity": True})
+    payload = {
+        "type": "block_actions",
+        "api_app_id": "ATEST",
+        "user": {"id": "U1"},
+        "channel": {"id": "C1"},
+        "actions": [{"action_id": "unknown", "value": "x"}],
+    }
+    assert _signed_interaction_post(payload, secret="wrong").status_code == 401
+    assert _signed_interaction_post({**payload, "api_app_id": "AOTHER"}).status_code == 403
+    assert _signed_interaction_post(payload).status_code == 200
+
+
+def test_slack_feedback_uses_owned_message_and_hmac_pseudonym(monkeypatch):
+    _enable(monkeypatch, features={"interactivity": True})
+    calls = []
+    _patch_api(monkeypatch, calls, email="jane@weka.io")
+    db = SessionLocal()
+    try:
+        conv = Conversation(title="Slack command", username="jane@weka.io", domain="IT")
+        db.add(conv)
+        db.flush()
+        db.add(Message(conversation_id=conv.id, role="user", content="VPN issue"))
+        answer = Message(conversation_id=conv.id, role="assistant", content="Restart VPN.")
+        db.add(answer)
+        db.commit()
+        message_id = answer.id
+    finally:
+        db.close()
+    payload = {
+        "type": "block_actions",
+        "api_app_id": "ATEST",
+        "user": {"id": "U1"},
+        "channel": {"id": "C1"},
+        "actions": [{"action_id": "askweka_feedback_down", "value": message_id}],
+    }
+    assert _signed_interaction_post(payload).status_code == 200
+    for _ in range(50):
+        db = SessionLocal()
+        try:
+            fb = db.query(Feedback).filter(Feedback.message_id == message_id).first()
+            if fb:
+                break
+        finally:
+            db.close()
+        time.sleep(0.1)
+    assert fb and fb.thumbs == "down"
+    expected = hmac.new(
+        (os.environ.get("SESSION_SECRET", "") or "dev-only-insecure").encode(),
+        b"jane@weka.io",
+        hashlib.sha256,
+    ).hexdigest()
+    assert fb.username == expected and fb.username != "jane@weka.io"
+
+
+def test_command_parser_keeps_domain_and_instructions():
+    db = SessionLocal()
+    try:
+        row = db.get(SlackIntegration, 1) or SlackIntegration(id=1)
+        row.slash_commands = json.dumps([{
+            "command": "/ask-it",
+            "description": "Ask IT",
+            "usage_hint": "VPN help",
+            "domain": "IT",
+            "instructions": "Prefer the service portal.",
+        }])
+        db.merge(row)
+        db.flush()
+        command = svc.parse_commands(row)[0]
+        assert command["domain"] == "IT"
+        assert command["instructions"] == "Prefer the service portal."
+    finally:
+        db.rollback()
+        db.close()
+
+
+def test_feedback_database_rejects_duplicate_rater_rows():
+    """The DB, not only application timing, enforces one rating per user."""
+    db = SessionLocal()
+    try:
+        conv = Conversation(title="Feedback uniqueness", username="unique@weka.io")
+        db.add(conv)
+        db.flush()
+        msg = Message(conversation_id=conv.id, role="assistant", content="Answer")
+        db.add(msg)
+        db.flush()
+        db.add_all(
+            [
+                Feedback(
+                    message_id=msg.id,
+                    username="same-rater",
+                    question="Q",
+                    answer_summary="A",
+                    thumbs="up",
+                ),
+                Feedback(
+                    message_id=msg.id,
+                    username="same-rater",
+                    question="Q",
+                    answer_summary="A",
+                    thumbs="down",
+                ),
+            ]
+        )
+        with pytest.raises(IntegrityError):
+            db.flush()
+    finally:
+        db.rollback()
+        db.close()
+
+
+def test_interactive_public_post_rechecks_all_delivery_gates(monkeypatch):
+    _enable(
+        monkeypatch,
+        features={
+            "interactivity": True,
+            "slash_commands": True,
+            "slash_in_channel": True,
+        },
+    )
+    calls = []
+    _patch_api(monkeypatch, calls)
+
+    # Simulate an administrator disabling channel posting after the private
+    # answer was generated but before the employee clicks "Post to channel".
+    db = SessionLocal()
+    try:
+        row = db.get(SlackIntegration, 1)
+        features = svc.parse_features(row)
+        features["slash_in_channel"] = False
+        row.features = json.dumps(features)
+        db.commit()
+    finally:
+        db.close()
+
+    allowed = asyncio.run(
+        svc.post_interactive_answer("C1", "Private answer", "message-id")
+    )
+    assert allowed is False
+    assert not any(method == "chat.postMessage" for method, _ in calls)

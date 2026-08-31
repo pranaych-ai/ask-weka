@@ -36,4 +36,14 @@ Phase 1 POC (2026-08-23): streaming chat + conversation history + file-based kno
 - Workflow **Ask WEKA** runs `bash start.sh` → uvicorn on port 8000 (FastAPI serves the built frontend from `frontend/dist`).
 - Rebuild frontend after edits: delete `frontend/dist`, restart the workflow (or `cd frontend && npm run build`).
 - Env: `GEMINI_API_KEY` (secret, set), `GEMINI_MODEL=gemini-3.6-flash` (set — the old default `gemini-2.5-flash` was retired), `DATABASE_URL` (Replit Postgres, auto-managed).
+- Slack public endpoints are `POST /api/slack/events`,
+  `POST /api/slack/commands`, and `POST /api/slack/interactivity` (with the old
+  `/api/slack/interactions` alias). Slack credentials
+  (`SLACK_BOT_TOKEN`, `SLACK_SIGNING_SECRET`) live **only** in environment-
+  scoped Replit Secrets: never in a database row or admin form. Admin setup is:
+  set Secrets → generate/paste the manifest → install → Verify → enable
+  features. Gates run in this order: credentials, verified app + master switch,
+  feature flag, then employee opt-in for user-specific/data-reading features;
+  inbound actions additionally require raw-body HMAC/replay/app-id checks,
+  verified WEKA email, and server-side resource ownership.
 - The pnpm monorepo scaffolding (`artifacts/`, `lib/`, `scripts/`) is unused template code; the app lives at the repo root (`backend/`, `frontend/`, `knowledge/`).

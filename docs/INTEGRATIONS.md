@@ -93,7 +93,8 @@ Outbound domain: `https://slack.com` (Web API) — the only Slack egress.
 
 - **Setup**: admin portal → Slack tab generates the app manifest
   (deployment-aware URLs for `/api/slack/events`, `/api/slack/commands`,
-  `/api/slack/interactions`). An admin creates the app from the manifest at
+  `/api/slack/interactivity`; `/api/slack/interactions` remains a compatibility
+  alias). An admin creates the app from the manifest at
   api.slack.com, installs it, and puts the bot token + signing secret into
   Replit Secrets — credentials never pass through the app's API or UI.
 - **Verification**: server-side `auth.test`; only non-secret workspace/bot
@@ -107,7 +108,14 @@ Outbound domain: `https://slack.com` (Web API) — the only Slack egress.
   text). Mentions get a fresh single-exchange context and a threaded reply;
   when DM chat is disabled the bot points at the web app at most once per
   employee per day. Answers are Slack-formatted with an "Open Ask WEKA"
-  button, with a temporary eyes reaction while generating.
+  button, with a temporary eyes reaction while generating. Interactive answers
+  support anonymous HMAC-pseudonymized thumbs, an authorized "Post to channel"
+  action, and an editable ticket approval modal. Jira tickets are filed only
+  through the verified employee's own Jira connection.
+- **Thread/App Home/links**: opted-in thread catch-up is bounded to the current
+  thread or current channel (24 hours and 200 messages) and is never persisted.
+  App Home shows feature opt-in status. Deployment-domain link previews expose
+  only the Ask WEKA name/description, never conversation metadata or content.
 - **Outbound data flow**: ticket confirmations (title + Jira/Ask WEKA links)
   to the ticket owner, golden-run summaries to the initiating admin, optional
   regression posts, sync-failure alerts to the opted-in initiating admin plus
@@ -116,8 +124,10 @@ Outbound domain: `https://slack.com` (Web API) — the only Slack egress.
   channel. Every send is gated on admin feature toggles and, for user-specific
   messages, explicit employee opt-in (Slack tab / Notifications preferences).
   Messages use Block Kit; rate-limited calls retry once.
-- **Bot scopes** (minimum needed): `chat:write`, `im:read`, `im:history`,
-  `im:write`, `users:read`, `users:read.email`, `files:write`, `commands`.
+- **Bot scopes** are generated from enabled features. The full set can include
+  `chat:write`, `im:read`, `im:history`, `im:write`, `users:read`,
+  `users:read.email`, `files:write`, `commands`, `reactions:write`,
+  `app_mentions:read`, channel/private-channel history, and `links:read/write`.
 
 ### Upgrade path
 Tokens are scoped, expiring bearer credentials for now. When IT provisions an

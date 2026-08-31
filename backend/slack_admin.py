@@ -64,6 +64,8 @@ class CommandIn(BaseModel):
     command: str
     description: str = ""
     usage_hint: str = ""
+    domain: str = ""
+    instructions: str = ""
 
 
 class ConfigPatch(BaseModel):
@@ -116,11 +118,15 @@ def put_config(
             cmd = c.command.strip()
             if not cmd.startswith("/") or len(cmd) < 2 or " " in cmd:
                 raise HTTPException(400, f"Invalid slash command: {cmd!r}")
+            if c.domain not in ("", "IT", "HR"):
+                raise HTTPException(400, "Command domain must be IT, HR, or empty")
             cmds.append(
                 {
                     "command": cmd[:32],
                     "description": c.description.strip()[:100],
                     "usage_hint": c.usage_hint.strip()[:100],
+                    "domain": c.domain,
+                    "instructions": c.instructions.strip()[:2000],
                 }
             )
         row.slash_commands = json.dumps(cmds)

@@ -108,6 +108,11 @@ export default function SlackAdmin() {
   if (!cfg) return <div className="admin-loading">Loading…</div>;
 
   const setFeature = (key, value) => save({ features: { [key]: value } }, `f-${key}`);
+  const setCommand = (index, patch) => {
+    const commands = cfg.slash_commands.map((c, i) => (i === index ? { ...c, ...patch } : c));
+    setCfg({ ...cfg, slash_commands: commands });
+    save({ slash_commands: commands }, `command-${index}`);
+  };
 
   return (
     <div>
@@ -248,19 +253,44 @@ export default function SlackAdmin() {
 
       <h2>Slash commands</h2>
       <p className="admin-detail">
-        Registered in the generated manifest. Command behavior beyond safe acknowledgement is
-        not enabled yet.
+        Registered in the generated manifest. Each command can scope the knowledge base and add
+        administrator instructions; answers remain ephemeral until the asker explicitly posts.
       </p>
       <table className="admin-table">
         <thead>
-          <tr><th>Command</th><th>Description</th><th>Usage hint</th></tr>
+          <tr><th>Command</th><th>Description</th><th>Usage hint</th><th>Domain</th><th>Instructions</th></tr>
         </thead>
         <tbody>
-          {cfg.slash_commands.map((c) => (
+          {cfg.slash_commands.map((c, index) => (
             <tr key={c.command}>
               <td><code>{c.command}</code></td>
               <td>{c.description}</td>
               <td className="admin-detail">{c.usage_hint}</td>
+              <td>
+                <select
+                  value={c.domain || ""}
+                  disabled={!!busy}
+                  onChange={(e) => setCommand(index, { domain: e.target.value })}
+                >
+                  <option value="">All</option>
+                  <option value="IT">IT</option>
+                  <option value="HR">HR</option>
+                </select>
+              </td>
+              <td>
+                <input
+                  value={c.instructions || ""}
+                  disabled={!!busy}
+                  placeholder="Optional command-specific guidance"
+                  onChange={(e) => {
+                    const commands = cfg.slash_commands.map((x, i) =>
+                      i === index ? { ...x, instructions: e.target.value } : x
+                    );
+                    setCfg({ ...cfg, slash_commands: commands });
+                  }}
+                  onBlur={(e) => setCommand(index, { instructions: e.target.value })}
+                />
+              </td>
             </tr>
           ))}
         </tbody>

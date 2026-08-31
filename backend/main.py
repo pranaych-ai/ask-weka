@@ -7,6 +7,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .admin import router as admin_router
@@ -210,6 +211,18 @@ with engine.begin() as _conn:
             _conn.exec_driver_sql(
                 "ALTER TABLE slack_integration ADD COLUMN app_id VARCHAR(30) NOT NULL DEFAULT ''"
             )
+
+    # One rating per employee per assistant message. Clean up any legacy
+    # duplicates before enforcing this at the database layer so concurrent
+    # web/Slack button deliveries cannot create contradictory rows.
+    _conn.execute(_text(
+        "DELETE FROM feedback WHERE id NOT IN ("
+        "SELECT MIN(id) FROM feedback GROUP BY message_id, username)"
+    ))
+    _conn.execute(_text(
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_feedback_message_rater "
+        "ON feedback (message_id, username)"
+    ))
 
     # Unique history versions per KB section (works on postgres and sqlite)
     _conn.execute(_text(
@@ -479,6 +492,32 @@ def submit_feedback(
     fb.logged_time = datetime.now(timezone.utc)
     fb.cited_sources = "\n".join(_extract_sources(answer))
     fb.domain = _classify_domain(question, answer)
+    try:
+        db.flush()
+    except IntegrityError:
+        # A simultaneous web/Slack rating won the insert. Reload and update
+        # that row instead of returning an error or duplicating it.
+        db.rollback()
+        msg = db.get(Message, req.message_id)
+        if (
+            not msg
+            or msg.role != "assistant"
+            or msg.conversation.username != user["username"]
+        ):
+            raise HTTPException(404, "Assistant message not found")
+        fb = (
+            db.query(Feedback)
+            .filter(Feedback.message_id == msg.id, Feedback.username == rater)
+            .one()
+        )
+        fb.question = question.strip()
+        fb.answer_summary = _summarize(answer)
+        fb.thumbs = req.thumbs or ""
+        if req.feedback_text is not None:
+            fb.feedback_text = req.feedback_text.strip()
+        fb.logged_time = datetime.now(timezone.utc)
+        fb.cited_sources = "\n".join(_extract_sources(answer))
+        fb.domain = _classify_domain(question, answer)
     # Audit records that feedback was submitted, but never which question it
     # was for — feedback must stay anonymous, so no message/conversation ids.
     log_event(
