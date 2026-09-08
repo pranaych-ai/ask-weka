@@ -1,0 +1,25 @@
+# Gitleaks configuration for Ask WEKA
+# Extends the default gitleaks ruleset. Allowlists are narrow: only the exact
+# known-fake fixture values used by the AI safety test suite (which verifies
+# the output gate redacts token-shaped leaks) plus gitignored local caches
+# that are never committed. Real credentials — even inside test files — are
+# NOT exempt.
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Exact deliberate dummy secrets used as test fixtures (never real credentials)"
+regexes = [
+  # Fake AWS access key fixture in tests/test_ai_safety.py
+  '''AKIAABCDEFGHIJKLMNOP''',
+  # Fake Google API key fixture in tests/test_ai_safety.py
+  '''AIzaSyA1234567890abcdefghijklmnopqrstuv''',
+]
+paths = [
+  # Local-only caches that are gitignored and never committed
+  '''\.pytest_cache/.*''',
+  '''__pycache__/.*''',
+  '''\.local/share/pnpm/.*''',
+  '''\.cache/.*''',
+]
